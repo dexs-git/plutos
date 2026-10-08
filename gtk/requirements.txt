@@ -1,0 +1,3 @@
+# Keine externen Python-Pakete nötig – nur die Standardbibliothek.
+# Benötigt wird lediglich das Systempaket für die GTK3-Python-Bindings,
+# siehe README.md.

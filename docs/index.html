@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Plutos – Das Haushaltsbuch</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 128 128'%3E%3Ccircle cx='64' cy='64' r='58' fill='%23c9a227'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #161f1b;
+    --ink-raise: #1e2a24;
+    --parchment: #f3ead6;
+    --parchment-dim: #ded2b2;
+    --gold: #c9a227;
+    --gold-bright: #e6c65c;
+    --bronze: #8a5a24;
+    --forest: #5c7a3a;
+    --rule: rgba(243, 234, 214, 0.14);
+    --ink-text: #2a251a;
+  }
+  :root:not([data-theme="light"]) { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; scroll-padding-top: env(safe-area-inset-top, 0px); }
+  body {
+    margin: 0;
+    background: var(--ink);
+    color: var(--parchment);
+    font-family: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    line-height: 1.55;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  img { max-width: 100%; display: block; }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 0 28px; }
+  .mono { font-family: 'IBM Plex Mono', monospace; }
+  h1, h2, h3 { font-family: 'Fraunces', serif; font-weight: 600; line-height: 1.12; margin: 0; }
+  a { color: inherit; }
+
+  /* -- Kopf / Nav -- */
+  header.top {
+    position: sticky; top: 0; z-index: 20;
+    padding-top: calc(16px + env(safe-area-inset-top, 0px));
+    padding-bottom: 16px;
+    background: linear-gradient(var(--ink) 75%, transparent);
+  }
+  .top-inner { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  .brand { display: flex; align-items: center; gap: 10px; font-family: 'Fraunces', serif; font-size: 20px; font-weight: 600; letter-spacing: 0.01em; }
+  .brand svg { width: 30px; height: 30px; flex: none; }
+  nav.top-links { display: flex; gap: 24px; font-size: 14px; color: var(--parchment-dim); }
+  nav.top-links a:hover { color: var(--gold-bright); }
+
+  /* -- Hero -- */
+  .hero { padding: 56px 0 72px; }
+  .hero-grid { display: grid; grid-template-columns: 1.05fr 1fr; gap: 56px; align-items: center; }
+  .kicker {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--gold-bright); margin-bottom: 18px;
+  }
+  .kicker::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--gold-bright); }
+  .hero h1 { font-size: clamp(42px, 6vw, 64px); }
+  .hero h1 em { font-style: normal; color: var(--gold-bright); }
+  .hero .subtitle { font-family: 'Fraunces', serif; font-style: italic; font-size: 21px; color: var(--parchment-dim); margin-top: 4px; }
+  .hero p.lede { margin-top: 20px; font-size: 16.5px; color: var(--parchment-dim); max-width: 46ch; }
+  .cta-row { display: flex; gap: 14px; margin-top: 30px; flex-wrap: wrap; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 13px 22px; border-radius: 3px; font-size: 14.5px; font-weight: 500;
+    text-decoration: none; border: 1px solid transparent; cursor: pointer;
+  }
+  .btn-primary { background: var(--gold); color: #1c1506; }
+  .btn-primary:hover { background: var(--gold-bright); }
+  .btn-ghost { border-color: var(--rule); color: var(--parchment); }
+  .btn-ghost:hover { border-color: var(--gold-bright); color: var(--gold-bright); }
+
+  .hero-shot {
+    border: 1px solid var(--rule);
+    background: var(--parchment);
+    padding: 8px;
+    border-radius: 4px;
+    box-shadow: 0 30px 60px -20px rgba(0,0,0,0.55);
+    transform: rotate(0.6deg);
+  }
+  .hero-shot img { border-radius: 2px; }
+
+  /* -- Section scaffolding -- */
+  section { padding: 64px 0; border-top: 1px solid var(--rule); }
+  .section-head { max-width: 58ch; margin-bottom: 44px; }
+  .section-head .kicker { margin-bottom: 14px; }
+  .section-head h2 { font-size: clamp(28px, 3.4vw, 36px); }
+  .section-head p { color: var(--parchment-dim); margin-top: 14px; font-size: 15.5px; }
+
+  /* -- Ledger entries (features) -- */
+  .entry { display: grid; grid-template-columns: 120px 1fr; gap: 28px; padding: 36px 0; border-top: 1px solid var(--rule); }
+  .entry:first-of-type { border-top: 1px solid var(--rule); }
+  .entry-num { font-family: 'Fraunces', serif; font-size: 46px; color: var(--gold); font-weight: 500; line-height: 1; }
+  .entry-num span { display: block; font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--parchment-dim); margin-top: 6px; letter-spacing: 0.06em; }
+  .entry-body h3 { font-size: 22px; margin-bottom: 10px; color: var(--parchment); }
+  .entry-body p { color: var(--parchment-dim); font-size: 15px; max-width: 62ch; }
+  .entry-shot {
+    margin-top: 20px; border: 1px solid var(--rule); background: var(--parchment);
+    padding: 6px; border-radius: 4px; max-width: 760px;
+  }
+  .entry-shot img { border-radius: 2px; }
+
+
+  /* -- Vergleich GTK / Qt -- */
+  .compare-shot { border: 1px solid var(--rule); border-radius: 4px; overflow: hidden; background: var(--ink); }
+  .compare-notes { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; margin-top: 26px; }
+  .compare-notes h3 { font-size: 17px; color: var(--gold-bright); margin-bottom: 8px; }
+  .compare-notes p { color: var(--parchment-dim); font-size: 14.5px; margin: 0; max-width: 52ch; }
+
+  /* -- Plattformen -- */
+  .platform-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; }
+  .platform-card {
+    border: 1px solid var(--rule); border-radius: 6px; padding: 28px;
+    background: var(--ink-raise);
+    display: flex; flex-direction: column; gap: 14px;
+  }
+  .platform-card h3 { font-size: 20px; color: var(--parchment); display: flex; align-items: center; gap: 10px; }
+  .platform-card .tag {
+    font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.04em;
+    color: var(--gold-bright); border: 1px solid rgba(201,162,39,0.4); border-radius: 3px;
+    padding: 2px 8px; text-transform: uppercase;
+  }
+  .platform-card p { color: var(--parchment-dim); font-size: 14.5px; flex: 1; margin: 0; }
+  .platform-card ul { margin: 0; padding-left: 18px; color: var(--parchment-dim); font-size: 14px; }
+  .platform-card .btn { align-self: flex-start; margin-top: 4px; }
+
+  /* -- Transparenz -- */
+  .honest {
+    background: var(--ink-raise); border: 1px solid var(--rule); border-radius: 6px;
+    padding: 36px; display: grid; grid-template-columns: 1fr 1fr; gap: 32px;
+  }
+  .honest h3 { font-size: 18px; margin-bottom: 10px; color: var(--gold-bright); }
+  .honest p, .honest li { color: var(--parchment-dim); font-size: 14.5px; }
+  .honest ul { margin: 0; padding-left: 18px; }
+
+  footer { padding: 44px 0 calc(44px + env(safe-area-inset-bottom, 0px)); border-top: 1px solid var(--rule); }
+  .footer-grid { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; flex-wrap: wrap; }
+  .footer-note { font-size: 13px; color: var(--parchment-dim); max-width: 52ch; }
+  .footer-brand { display: flex; align-items: center; gap: 8px; font-family: 'Fraunces', serif; font-style: italic; color: var(--parchment-dim); font-size: 14px; }
+  .footer-brand svg { width: 18px; height: 18px; opacity: 0.8; }
+
+  @media (max-width: 860px) {
+    .hero-grid { grid-template-columns: 1fr; }
+    .hero-shot { order: -1; transform: none; }
+    .platform-grid { grid-template-columns: 1fr; }
+    .honest { grid-template-columns: 1fr; }
+    .compare-notes { grid-template-columns: 1fr; }
+    .entry { grid-template-columns: 1fr; }
+    .entry-num { display: flex; align-items: baseline; gap: 10px; }
+    .entry-num span { margin-top: 0; }
+    nav.top-links { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap top-inner">
+    <div class="brand">
+      <svg viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="64" cy="64" r="58" fill="#c9a227"/>
+        <circle cx="64" cy="64" r="58" fill="none" stroke="#7a5c1e" stroke-width="4"/>
+        <circle cx="64" cy="64" r="52" fill="none" stroke="#e0be4a" stroke-width="1.5" opacity="0.6"/>
+        <g fill="#5c7a3a"><g transform="translate(64,64)">
+          <g transform="rotate(160)"><ellipse cx="0" cy="-50" rx="4" ry="8.5"/></g>
+          <g transform="rotate(140)"><ellipse cx="0" cy="-50" rx="4.2" ry="9"/></g>
+          <g transform="rotate(120)"><ellipse cx="0" cy="-50" rx="4.4" ry="9.5"/></g>
+          <g transform="rotate(100)"><ellipse cx="0" cy="-50" rx="4.4" ry="9.5"/></g>
+          <g transform="rotate(80)"><ellipse cx="0" cy="-50" rx="4.2" ry="9"/></g>
+          <g transform="rotate(60)"><ellipse cx="0" cy="-50" rx="4" ry="8.5"/></g>
+          <g transform="rotate(-160)"><ellipse cx="0" cy="-50" rx="4" ry="8.5"/></g>
+          <g transform="rotate(-140)"><ellipse cx="0" cy="-50" rx="4.2" ry="9"/></g>
+          <g transform="rotate(-120)"><ellipse cx="0" cy="-50" rx="4.4" ry="9.5"/></g>
+          <g transform="rotate(-100)"><ellipse cx="0" cy="-50" rx="4.4" ry="9.5"/></g>
+          <g transform="rotate(-80)"><ellipse cx="0" cy="-50" rx="4.2" ry="9"/></g>
+          <g transform="rotate(-60)"><ellipse cx="0" cy="-50" rx="4" ry="8.5"/></g>
+        </g></g>
+        <path d="M 42,40 Q 50,26 62,32 C 82,42 92,56 84,70 C 78,80 66,80 58,70 C 66,74 74,70 74,62 C 74,54 66,50 58,54 C 48,58 40,54 42,40 Z" fill="#8a5a24" stroke="#5c3714" stroke-width="1.5"/>
+        <circle cx="46" cy="30" r="4.5" fill="#e6c65c" stroke="#a9812a" stroke-width="1"/>
+        <circle cx="55" cy="24" r="4" fill="#e6c65c" stroke="#a9812a" stroke-width="1"/>
+        <circle cx="64" cy="27" r="3.5" fill="#e6c65c" stroke="#a9812a" stroke-width="1"/>
+      </svg>
+      Plutos
+    </div>
+    <nav class="top-links">
+      <a href="#eintraege">Funktionen</a>
+      <a href="#vergleich">Vergleich</a>
+      <a href="#plattformen">Herunterladen</a>
+      <a href="#transparenz">Wie's entstand</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <section class="hero wrap" style="border-top:none; padding-top:12px;">
+    <div class="hero-grid">
+      <div>
+        <div class="kicker">Ein persönliches Projekt · Open Source</div>
+        <h1>Plutos<br><em>für dein Geld.</em></h1>
+        <div class="subtitle">Das Haushaltsbuch</div>
+        <p class="lede">
+          Benannt nach dem griechischen Gott des Reichtums: ein Haushaltsbuch,
+          das Buchungen wie ein echtes Kontobuch führt – mit wiederkehrenden
+          Einträgen, die wirklich wiederkehren, deutscher Abgeltungsteuer
+          samt Vorabpauschale, und einer Finanzplanung, die deinen
+          tatsächlichen Kontostand kennt.
+        </p>
+        <div class="cta-row">
+          <a class="btn btn-primary" href="#plattformen">Herunterladen</a>
+          <a class="btn btn-ghost" href="#eintraege">Was Plutos kann</a>
+        </div>
+      </div>
+      <div class="hero-shot">
+        <img src="screenshots/01-buchungen.png" alt="Plutos – Kalenderansicht der Buchungen">
+      </div>
+    </div>
+  </section>
+
+  <section class="wrap" style="border-top:none; padding-top:0; padding-bottom:0;">
+    <p style="max-width:62ch; color:var(--parchment-dim); font-size:15px;">
+      Plutos ist aus einem einfachen Kalender-Skript für Linux Mint gewachsen
+      und wurde Stück für Stück zu einem vollwertigen Haushaltsbuch
+      ausgebaut – jede Funktion entstand, weil sie im echten Gebrauch fehlte,
+      nicht nach einem Lastenheft. Es gibt zwei unabhängige Oberflächen
+      (GTK für Linux, Qt für macOS/Windows/Linux), die sich dieselbe
+      Datenbank-Logik teilen.
+    </p>
+  </section>
+
+  <section id="eintraege">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="kicker">Die Einträge</div>
+        <h2>Sechs Seiten im Kontobuch</h2>
+        <p>Jede Ansicht ist ein eigener Abschnitt im selben Buch – vom
+        einzelnen Tag bis zur Anlage-Empfehlung für die nächsten Jahre.</p>
+      </div>
+
+      <div class="entry">
+        <div class="entry-num">01<span>Buchungen</span></div>
+        <div class="entry-body">
+          <h3>Kalender statt Liste</h3>
+          <p>Monats-, Wochen- und Jahresansicht. Tage mit Buchungen sind fett
+          markiert, ein Doppelklick auf einen Tag legt direkt eine neue
+          Buchung mit diesem Datum an. Wiederkehrende Einträge laufen
+          unbegrenzt weiter und lassen sich nachträglich bearbeiten, ohne
+          die Vergangenheit zu verändern.</p>
+          <div class="entry-shot"><img src="screenshots/01-buchungen.png" alt="Kalenderansicht mit Buchungen eines Tages"></div>
+        </div>
+      </div>
+
+      <div class="entry">
+        <div class="entry-num">02<span>Budgets</span></div>
+        <div class="entry-body">
+          <h3>Ein Limit pro Kategorie und Monat</h3>
+          <p>Budget setzen, Fortschrittsbalken beobachten, fertig. Budgets
+          gelten immer für den im Kalender sichtbaren Monat – kein
+          separates Formular, keine doppelte Dateneingabe.</p>
+          <div class="entry-shot"><img src="screenshots/02-budgets.png" alt="Budget-Übersicht mit Fortschrittsbalken je Kategorie"></div>
+        </div>
+      </div>
+
+      <div class="entry">
+        <div class="entry-num">03<span>Sparziele</span></div>
+        <div class="entry-body">
+          <h3>Mit echter Reihenfolge</h3>
+          <p>Mehrere Sparziele gleichzeitig, frei nach Priorität sortierbar.
+          Diese Reihenfolge entscheidet später auch, wie die
+          Finanzplanung-Empfehlung dein Geld auf die Ziele verteilt – oben
+          wird zuerst befüllt.</p>
+          <div class="entry-shot"><img src="screenshots/03-sparziele.png" alt="Sparziele mit Priorität, Zielbetrag und Fortschritt"></div>
+        </div>
+      </div>
+
+      <div class="entry">
+        <div class="entry-num">04<span>Finanzplanung</span></div>
+        <div class="entry-body">
+          <h3>Kontostand, Notgroschen, Empfehlung</h3>
+          <p>Ein Startguthaben zu einem Stichtag hinterlegen – Plutos
+          berechnet daraus deinen tatsächlichen Kontostand, nicht nur die
+          selbst erfassten Buchungen. Dazu eine Notgroschen-Berechnung aus
+          den laufenden Fixkosten und eine transparente Faustregel-
+          Empfehlung, wie viel von Einkommen und Startkapital auf
+          Notgroschen, Sparziele und ETF-Sparplan verteilt werden könnte –
+          optional mit Risikoprofil und Anlagehorizont.</p>
+          <div class="entry-shot"><img src="screenshots/04-finanzplanung.png" alt="Finanzplanung mit Kontostand und Anlage-Empfehlung"></div>
+        </div>
+      </div>
+
+      <div class="entry">
+        <div class="entry-num">05<span>ETF-Sparplan</span></div>
+        <div class="entry-body">
+          <h3>Mit deutscher Steuer, nicht ohne</h3>
+          <p>Jahresprojektion mit steigender Sparrate und Deckel, dazu
+          deutsche Abgeltungsteuer samt Teilfreistellung, Soli und
+          Sparerpauschbetrag – wahlweise mit jährlicher
+          Vorabpauschale-Simulation statt vereinfachter
+          Einmalbesteuerung. Mehrere Pläne lassen sich im
+          Vergleichsdiagramm übereinanderlegen.</p>
+          <div class="entry-shot"><img src="screenshots/05-etf.png" alt="ETF-Sparplan-Rechner mit Jahresprojektion"></div>
+        </div>
+      </div>
+
+      <div class="entry">
+        <div class="entry-num">06<span>Auswertungen</span></div>
+        <div class="entry-body">
+          <h3>Kreisdiagramm, Trend, Geldfluss</h3>
+          <p>Drei Ansichten zum Umschalten statt gestapelter Diagramme:
+          Ausgaben nach Kategorie, ein Trend über mehrere Monate, und ein
+          Sankey-Diagramm, das zeigt, wie sich Einnahmen auf Ausgaben und
+          Überschuss verteilen.</p>
+          <div class="entry-shot"><img src="screenshots/06-auswertungen.png" alt="Sankey-Diagramm: Einnahmen und Ausgaben eines Monats"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="vergleich">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="kicker">Im Vergleich</div>
+        <h2>Dieselben Daten, zwei Oberflächen</h2>
+        <p>Links die GTK-Version, rechts die Qt-Version – beide zeigen hier
+        denselben Monat mit denselben Buchungen. Die Datenbank-Logik ist
+        identisch, nur die Oberfläche unterscheidet sich.</p>
+      </div>
+      <div class="compare-shot"><img src="screenshots/07-vergleich-gtk-qt.png" alt="Buchungen-Tab: GTK-Version links, Qt-Version rechts"></div>
+      <div class="compare-notes">
+        <div>
+          <h3>GTK3 · Linux</h3>
+          <p>Eigener Monatskalender: Jeder Tag zeigt seinen Saldo direkt in
+          der Zelle (grün für Einnahmen, rot für Ausgaben), dazu
+          Kalenderwochen und ein „Heute“-Button. Gebaut für GTK-Desktops
+          wie Linux Mint/Cinnamon.</p>
+        </div>
+        <div>
+          <h3>Qt · macOS, Windows, Linux</h3>
+          <p>Der Qt-Standardkalender markiert Tage mit Buchungen fett; die
+          Details stehen rechts in der Tagesliste, darunter ein kurzer
+          Hinweisblock zur Bedienung. Läuft mit denselben Dateien auf allen
+          drei Plattformen.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="plattformen">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="kicker">Herunterladen</div>
+        <h2>Zwei Oberflächen, eine Datenbank</h2>
+        <p>Plutos gibt es als Quellcode mit Installationsskripten – kein
+        Appstore, keine Signierung, dafür vollständig einsehbar.</p>
+      </div>
+      <div class="platform-grid">
+        <div class="platform-card">
+          <h3>Linux (GTK) <span class="tag">Nativ für Mint/Cinnamon</span></h3>
+          <p>Die ursprüngliche Version, gebaut mit GTK3 – fügt sich optisch
+          in Linux Mint und andere GTK-Desktops ein.</p>
+          <ul>
+            <li>Installationsskript legt Menüeintrag an</li>
+            <li>Icon, Deinstallationsskript inklusive</li>
+          </ul>
+          <a class="btn btn-ghost" href="https://github.com/DEIN-NUTZERNAME/plutos/releases/latest/download/plutos-linux.zip">plutos-linux.zip</a>
+        </div>
+        <div class="platform-card">
+          <h3>macOS · Windows · Linux <span class="tag">Qt / PySide6</span></h3>
+          <p>Plattformübergreifende Variante mit identischem
+          Funktionsumfang – mit Installationsskript für jede der drei
+          Plattformen, inklusive automatischem Umgang mit
+          PEP-668-geschützten Python-Installationen unter Linux.</p>
+          <ul>
+            <li><code class="mono">install-macos.sh</code> ·
+                <code class="mono">install-windows.bat</code> ·
+                <code class="mono">install-linux.sh</code></li>
+          </ul>
+          <a class="btn btn-ghost" href="https://github.com/DEIN-NUTZERNAME/plutos/releases/latest/download/plutos-qt.zip">plutos-qt.zip</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="transparenz">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="kicker">Wie's entstand</div>
+        <h2>Ohne Team, mit Nachweis</h2>
+      </div>
+      <div class="honest">
+        <div>
+          <h3>Entwicklung</h3>
+          <p>Plutos entstand iterativ in Gesprächen mit Claude (Anthropic) –
+          Funktion für Funktion, meist ausgelöst durch echte Nutzung statt
+          Planung am Reißbrett. Die GTK- und Qt-Version teilen sich die
+          komplette Datenbank-Logik, damit beide Oberflächen dieselben
+          Zahlen liefern.</p>
+        </div>
+        <div>
+          <h3>Geprüft, nicht nur behauptet</h3>
+          <ul>
+            <li>Automatisierte Funktionstests der Berechnungslogik (Budgets,
+            ETF-Steuer, Empfehlung, Kontostand)</li>
+            <li>GUI-Aufbau unter Xvfb getestet, bevor Funktionen ausgeliefert
+            wurden</li>
+            <li>Alle Screenshots auf dieser Seite sind echte Aufnahmen der
+            laufenden App, keine Mockups – aufgenommen in einer
+            Linux-Testumgebung mit dunklem Theme, auf deinem System sieht es
+            je nach Theme etwas anders aus</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap footer-grid">
+    <div class="footer-note">
+      Plutos ist ein privates Projekt und keine Finanzberatung. Steuer- und
+      Finanzplanungs-Rechner sind vereinfachte Modellrechnungen zur groben
+      Orientierung – für verbindliche Entscheidungen wende dich an eine
+      unabhängige Finanzberatung oder Steuerberatung.
+    </div>
+    <div class="footer-brand">
+      <svg viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg"><circle cx="64" cy="64" r="58" fill="#c9a227"/></svg>
+      Plutos – Das Haushaltsbuch
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

@@ -64,6 +64,7 @@ for %%F in (main.py db.py charts.py dialogs.py i18n.py) do (
     )
     copy /Y "%SCRIPT_DIR%%%F" "%APP_DIR%\%%F" >nul
 )
+if exist "%SCRIPT_DIR%icon.png" copy /Y "%SCRIPT_DIR%icon.png" "%APP_DIR%\icon.png" >nul
 REM Alten Programmordner unter dem frueheren Namen entfernen (enthaelt
 REM keine Nutzerdaten, kann also gefahrlos geloescht werden).
 if exist "%LEGACY_APP_DIR%" rmdir /S /Q "%LEGACY_APP_DIR%"

@@ -73,6 +73,7 @@ for datei in main.py db.py charts.py dialogs.py i18n.py; do
     fi
     cp "$SCRIPT_DIR/$datei" "$APP_DIR/$datei"
 done
+[ -f "$SCRIPT_DIR/icon.png" ] && cp "$SCRIPT_DIR/icon.png" "$APP_DIR/icon.png" || true
 # Alten Programmordner unter dem früheren Namen entfernen (enthält keine
 # Nutzerdaten, kann also gefahrlos ersetzt werden).
 if [ -d "$LEGACY_APP_DIR" ]; then

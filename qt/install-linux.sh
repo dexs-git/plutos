@@ -73,6 +73,7 @@ for datei in main.py db.py charts.py dialogs.py i18n.py; do
     fi
     cp "$SCRIPT_DIR/$datei" "$APP_DIR/$datei"
 done
+[ -f "$SCRIPT_DIR/icon.png" ] && cp "$SCRIPT_DIR/icon.png" "$APP_DIR/icon.png" || true
 if [ -f "$SCRIPT_DIR/icon.svg" ]; then
     cp "$SCRIPT_DIR/icon.svg" "$APP_DIR/icon.svg"
 fi

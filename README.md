@@ -66,6 +66,28 @@ Datenbank-Logik teilen:
   14 bleiben erhalten), zusätzlich „Datenbank jetzt sichern“ per Klick
 - **„?“-Hilfe-Buttons** neben allen erklärungsbedürftigen Eingabefeldern
 
+## Fertige Programmpakete
+
+Unter [Releases](../../releases) liegen – sobald ein Release veröffentlicht ist –
+fertige Pakete der Qt-Version, ganz ohne Python-Installation:
+
+| System | Datei |
+|---|---|
+| Linux | `Plutos-<Version>-x86_64.AppImage` (ausführbar machen, doppelklicken) |
+| macOS (Apple Silicon) | `Plutos-<Version>-macOS-arm64.dmg` |
+| Windows | `Plutos-<Version>-Setup.exe` oder `…-windows-portable.zip` |
+
+Die Programme sind nicht signiert, daher warnen macOS und Windows beim ersten Start:
+unter macOS Rechtsklick auf die App → „Öffnen“, unter Windows „Weitere Informationen“
+→ „Trotzdem ausführen“. Deine Daten liegen weiterhin im Benutzerordner und bleiben
+bei Updates erhalten.
+
+**Selbst bauen:** Die Pakete entstehen automatisch per GitHub Actions
+(`.github/workflows/release.yml`), sobald ein Tag wie `v1.1.0` gepusht wird. Lokal:
+`pip install -r qt/requirements.txt pyinstaller`, dann
+`pyinstaller packaging/plutos.spec --noconfirm` (Ergebnis in `dist/Plutos/`) und unter
+Linux zusätzlich `bash packaging/build-appimage.sh <Version>`.
+
 ## Screenshots
 
 | | |

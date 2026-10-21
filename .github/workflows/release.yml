@@ -1,0 +1,98 @@
+name: Build & Release
+
+# Bei jedem Tag "v…" (z. B. v1.1.0) werden Linux-AppImage, macOS-dmg und
+# Windows-Installer gebaut und an einen GitHub-Release gehängt.
+# Zum Testen ohne Release: Actions → "Build & Release" → "Run workflow".
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pytest
+      - run: python -m pytest tests -q
+
+  linux:
+    needs: tests
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: sudo apt-get update && sudo apt-get install -y libxcb-cursor0 libxkbcommon-x11-0 libegl1 libgl1
+      - run: pip install -r qt/requirements.txt pyinstaller
+      - run: pyinstaller packaging/plutos.spec --noconfirm
+      - run: bash packaging/build-appimage.sh "${GITHUB_REF_NAME}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-appimage
+          path: dist/*.AppImage
+
+  macos:
+    needs: tests
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r qt/requirements.txt pyinstaller
+      - run: pyinstaller packaging/plutos.spec --noconfirm
+      - name: dmg erstellen
+        run: |
+          brew install create-dmg
+          create-dmg --volname "Plutos" --app-drop-link 420 150 \
+            --window-size 640 360 --icon "Plutos.app" 200 150 \
+            "dist/Plutos-${GITHUB_REF_NAME}-macOS-arm64.dmg" "dist/Plutos.app"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: dist/*.dmg
+
+  windows:
+    needs: tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r qt/requirements.txt pyinstaller
+      - run: pyinstaller packaging/plutos.spec --noconfirm
+      - name: Installer erstellen
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DAppVersion=$env:GITHUB_REF_NAME" packaging\plutos.iss
+          Compress-Archive -Path dist\Plutos -DestinationPath "dist\Plutos-$env:GITHUB_REF_NAME-windows-portable.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: |
+            dist/*-Setup.exe
+            dist/*-portable.zip
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true

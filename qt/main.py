@@ -24,6 +24,7 @@ Start:
 
 import sys
 import datetime
+from pathlib import Path
 import re
 
 from PySide6.QtWidgets import (
@@ -34,7 +35,7 @@ from PySide6.QtWidgets import (
     QMessageBox, QGroupBox, QProgressBar, QSizePolicy, QDateEdit, QInputDialog,
 )
 from PySide6.QtCore import Qt, QDate
-from PySide6.QtGui import QColor, QTextCharFormat, QPalette, QShortcut, QKeySequence
+from PySide6.QtGui import QIcon, QColor, QTextCharFormat, QPalette, QShortcut, QKeySequence
 
 from db import FinanceStore, add_months
 from i18n import tr, set_language, get_language, LANGUAGES, months, months_short, weekdays, weekdays_short
@@ -2176,10 +2177,20 @@ class MainWindow(QMainWindow):
         self._refresh_etf_comparison()
 
 
+def _resource_path(name):
+    """Pfad zu einer mitgelieferten Datei – im Quellcode neben main.py, in
+    einer PyInstaller-App im entpackten Datenordner."""
+    base = getattr(sys, "_MEIPASS", None)
+    return Path(base) / name if base else Path(__file__).resolve().parent / name
+
+
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("Plutos")
     app.setOrganizationName("Plutos")
+    icon_path = _resource_path("icon.png")
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
     win = MainWindow()
     win.show()
     sys.exit(app.exec())

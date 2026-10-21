@@ -23,6 +23,7 @@ existiert, also nur einmalig.
 
 import sqlite3
 import json
+import collections
 import csv
 import datetime
 import math
@@ -102,8 +103,11 @@ def _month_pattern(month):
 
 
 class FinanceStore:
+    BACKUP_KEEP = 14  # so viele automatische Datenbank-Backups bleiben erhalten
+
     def __init__(self, db_path: Path = DB_PATH):
         DATA_DIR.mkdir(parents=True, exist_ok=True)
+        self.db_path = Path(db_path)
         self.conn = sqlite3.connect(str(db_path))
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
@@ -183,6 +187,15 @@ class FinanceStore:
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
             value TEXT
+        );
+
+        -- Vorlagen für häufige Einzelbuchungen ("Tanken 60 €" per Klick)
+        CREATE TABLE IF NOT EXISTS quick_templates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            category_id INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
+            amount REAL NOT NULL,
+            description TEXT
         );
         """)
         c.commit()
@@ -304,8 +317,69 @@ class FinanceStore:
         return cur.fetchone()
 
     def delete_transaction(self, transaction_id):
+        """Löscht eine Buchung. Die zuletzt gelöschte Buchung wird gemerkt und
+        lässt sich mit undo_delete_transaction() wiederherstellen."""
+        row = self.conn.execute("SELECT * FROM transactions WHERE id = ?",
+                                (transaction_id,)).fetchone()
+        self._last_deleted = dict(row) if row else None
         self.conn.execute("DELETE FROM transactions WHERE id = ?", (transaction_id,))
         self.conn.commit()
+
+    def can_undo_delete(self):
+        return getattr(self, "_last_deleted", None) is not None
+
+    def undo_delete_transaction(self):
+        """Stellt die zuletzt gelöschte Buchung wieder her (nur eine Ebene).
+        Gibt die wiederhergestellte Buchung als dict zurück oder None."""
+        data = getattr(self, "_last_deleted", None)
+        if not data:
+            return None
+        data = dict(data)
+        # Gehört die Buchung zu einer inzwischen gelöschten Vorlage, wird sie
+        # zur normalen Einzelbuchung statt an einer toten Referenz zu hängen.
+        template_id = data.get("recurring_template_id")
+        if template_id is not None and self.conn.execute(
+                "SELECT 1 FROM recurring_templates WHERE id = ?", (template_id,)).fetchone() is None:
+            data["recurring_template_id"] = None
+        if self.conn.execute("SELECT 1 FROM transactions WHERE id = ?",
+                             (data["id"],)).fetchone():
+            data.pop("id")  # ID wurde inzwischen neu vergeben
+        columns = ", ".join(data)
+        placeholders = ", ".join("?" * len(data))
+        self.conn.execute(f"INSERT INTO transactions ({columns}) VALUES ({placeholders})",
+                          list(data.values()))
+        self.conn.commit()
+        self._last_deleted = None
+        return data
+
+    # -- Schnellbuchungs-Vorlagen -------------------------------------------------
+
+    def add_quick_template(self, name, category_id, amount, description=""):
+        cur = self.conn.execute(
+            "INSERT INTO quick_templates (name, category_id, amount, description) "
+            "VALUES (?, ?, ?, ?)", (name.strip(), category_id, amount, description or ""))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def list_quick_templates(self):
+        return self.conn.execute("""
+            SELECT q.id, q.name, q.amount, q.description,
+                   c.id AS category_id, c.name AS category_name, c.kind, c.icon
+            FROM quick_templates q JOIN categories c ON q.category_id = c.id
+            ORDER BY q.name COLLATE NOCASE
+        """).fetchall()
+
+    def delete_quick_template(self, template_id):
+        self.conn.execute("DELETE FROM quick_templates WHERE id = ?", (template_id,))
+        self.conn.commit()
+
+    def book_quick_template(self, template_id, date):
+        """Legt aus einer Vorlage eine Buchung für `date` (ISO) an; Rückgabe: ID."""
+        q = self.conn.execute("SELECT * FROM quick_templates WHERE id = ?",
+                              (template_id,)).fetchone()
+        if q is None:
+            return None
+        return self.add_transaction(date, q["amount"], q["category_id"], q["description"])
 
     def list_transactions(self, month=None):
         """month im Format YYYY-MM, oder None für alle Buchungen."""
@@ -318,6 +392,59 @@ class FinanceStore:
             ORDER BY t.date DESC, t.id DESC
         """, (pattern,))
         return cur.fetchall()
+
+    def search_transactions(self, text=None, category_id=None, kind=None,
+                            date_from=None, date_to=None, min_amount=None,
+                            max_amount=None, include_future=False, limit=2000):
+        """Durchsucht alle Buchungen. Alle Filter sind optional und werden
+        mit UND verknüpft.
+
+        text: Teilstring in Beschreibung oder Kategoriename (ohne Beachtung
+              der Groß-/Kleinschreibung)
+        kind: 'einnahme' oder 'ausgabe'
+        date_from/date_to: ISO-Datum 'YYYY-MM-DD', jeweils einschließlich
+        min_amount/max_amount: Grenzen für den Betrag OHNE Vorzeichen
+        include_future: False blendet Buchungen nach heute aus (wiederkehrende
+              Buchungen werden vorab für die Zukunft erzeugt)
+
+        Gibt (rows, truncated) zurück; truncated ist True, wenn mehr als
+        `limit` Treffer existieren."""
+        where, params = [], []
+        if text:
+            pattern = f"%{text.strip().lower()}%"
+            where.append("(LOWER(COALESCE(t.description, '')) LIKE ? OR LOWER(c.name) LIKE ?)")
+            params += [pattern, pattern]
+        if category_id is not None:
+            where.append("c.id = ?")
+            params.append(category_id)
+        if kind:
+            where.append("c.kind = ?")
+            params.append(kind)
+        if date_from:
+            where.append("t.date >= ?")
+            params.append(date_from)
+        if date_to:
+            where.append("t.date <= ?")
+            params.append(date_to)
+        if not include_future:
+            where.append("t.date <= ?")
+            params.append(datetime.date.today().isoformat())
+        if min_amount is not None:
+            where.append("ABS(t.amount) >= ?")
+            params.append(min_amount - 0.005)
+        if max_amount is not None:
+            where.append("ABS(t.amount) <= ?")
+            params.append(max_amount + 0.005)
+        sql = """
+            SELECT t.id, t.date, t.amount, t.description, t.recurring_template_id,
+                   c.id AS category_id, c.name AS category_name, c.kind, c.icon
+            FROM transactions t JOIN categories c ON t.category_id = c.id
+        """
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY t.date DESC, t.id DESC LIMIT ?"
+        rows = self.conn.execute(sql, params + [limit + 1]).fetchall()
+        return rows[:limit], len(rows) > limit
 
     def list_transactions_for_day(self, date):
         cur = self.conn.execute("""
@@ -529,6 +656,31 @@ class FinanceStore:
             ORDER BY c.name
         """, (month, _month_pattern(month)))
         return cur.fetchall()
+
+    BUDGET_WARN_FRACTION = 0.8
+
+    @staticmethod
+    def budget_level(spent, limit_amount):
+        """'ok', 'warn' (ab 80 % des Budgets) oder 'over' (ab 100 %); 'none',
+        wenn kein Budget gesetzt ist."""
+        if not limit_amount or limit_amount <= 0:
+            return "none"
+        if spent >= limit_amount:
+            return "over"
+        if spent >= limit_amount * FinanceStore.BUDGET_WARN_FRACTION:
+            return "warn"
+        return "ok"
+
+    def budget_status(self, category_id, month):
+        """Budget-Stand einer Kategorie in einem Monat (YYYY-MM) oder None,
+        wenn dafür kein Budget gesetzt ist."""
+        for r in self.budget_overview(month):
+            if r["category_id"] == category_id:
+                if r["limit_amount"] is None:
+                    return None
+                return {"limit": r["limit_amount"], "spent": r["spent"],
+                        "level": self.budget_level(r["spent"], r["limit_amount"])}
+        return None
 
     # -- Sparziele --------------------------------------------------------------
 
@@ -917,6 +1069,64 @@ class FinanceStore:
             "value_after_tax": round(final_value - tax, 2),
         }
 
+    @staticmethod
+    def etf_scenarios(monthly_amount, annual_return_percent, duration_years,
+                      annual_increase_percent=0, max_monthly_amount=None,
+                      spread_percent=2.0, inflation_percent=2.0,
+                      use_vorabpauschale=False, basiszins_percent=2.55,
+                      teilfreistellung_percent=30.0, kapitalertragsteuer_percent=25.0,
+                      soli_percent=5.5, sparerpauschbetrag=1000.0):
+        """Rechnet denselben Sparplan für drei Renditeannahmen durch:
+        pessimistisch (Rendite - spread), erwartet und optimistisch
+        (Rendite + spread). Das sind Gedankenspiele über die Streuung möglicher
+        Ergebnisse, keine Prognose und keine Anlageempfehlung.
+
+        Je Szenario: Endwert vor Steuern, Steuer bei Verkauf, Endwert nach
+        Steuern und der Endwert nach Steuern in heutiger Kaufkraft (abgezinst
+        mit der Inflationsrate über die Laufzeit)."""
+        scenarios = (("Pessimistisch", annual_return_percent - spread_percent),
+                     ("Erwartet", annual_return_percent),
+                     ("Optimistisch", annual_return_percent + spread_percent))
+        deflator = (1 + inflation_percent / 100.0) ** duration_years
+        out = []
+        for label, rate in scenarios:
+            rate = max(rate, -99.0)
+            if use_vorabpauschale:
+                results, pretaxed = FinanceStore.project_etf_plan_with_vorabpauschale(
+                    monthly_amount, rate, duration_years,
+                    annual_increase_percent=annual_increase_percent,
+                    max_monthly_amount=max_monthly_amount,
+                    basiszins_percent=basiszins_percent,
+                    teilfreistellung_percent=teilfreistellung_percent,
+                    kapitalertragsteuer_percent=kapitalertragsteuer_percent,
+                    soli_percent=soli_percent, sparerpauschbetrag=sparerpauschbetrag)
+                final = results[-1]
+                tax = FinanceStore.apply_final_tax_with_vorabpauschale_credit(
+                    final["value"], final["invested"], pretaxed,
+                    teilfreistellung_percent=teilfreistellung_percent,
+                    kapitalertragsteuer_percent=kapitalertragsteuer_percent,
+                    soli_percent=soli_percent, sparerpauschbetrag=sparerpauschbetrag)
+            else:
+                results = FinanceStore.project_etf_plan(
+                    monthly_amount, rate, duration_years,
+                    annual_increase_percent=annual_increase_percent,
+                    max_monthly_amount=max_monthly_amount)
+                final = results[-1]
+                tax = FinanceStore.apply_german_capital_gains_tax(
+                    final["value"], final["invested"],
+                    teilfreistellung_percent=teilfreistellung_percent,
+                    kapitalertragsteuer_percent=kapitalertragsteuer_percent,
+                    soli_percent=soli_percent, sparerpauschbetrag=sparerpauschbetrag)
+            after_tax = tax.get("value_after_tax")
+            out.append({
+                "label": label, "annual_return": round(rate, 2),
+                "invested": final["invested"], "value": final["value"],
+                "tax": tax.get("final_tax", tax.get("tax")),
+                "value_after_tax": after_tax,
+                "real_value_after_tax": round(after_tax / deflator, 2),
+            })
+        return out
+
     # -- Auswertungen (für Diagramme) --------------------------------------------
 
     def spending_by_category(self, month):
@@ -992,6 +1202,116 @@ class FinanceStore:
             })
         return results
 
+    # -- Kategorien-Vergleich (Monat vs. Vormonat, Jahresverlauf) ---------------
+
+    def category_comparison(self, month_current, month_previous):
+        """Vergleicht die Ausgaben je Kategorie zweier Monate (Format YYYY-MM).
+
+        Liefert eine Liste von dicts (name, icon, current, previous, diff, pct),
+        absteigend nach dem größeren der beiden Beträge. `pct` ist die
+        prozentuale Veränderung gegenüber dem Vergleichsmonat und None, wenn
+        dort nichts ausgegeben wurde (Division durch 0 / "neu")."""
+        cur_rows = {r["category_name"]: r for r in self.spending_by_category(month_current)}
+        prev_rows = {r["category_name"]: r for r in self.spending_by_category(month_previous)}
+        result = []
+        for name in set(cur_rows) | set(prev_rows):
+            icon = (cur_rows.get(name) or prev_rows[name])["icon"]
+            current = cur_rows[name]["total"] if name in cur_rows else 0.0
+            previous = prev_rows[name]["total"] if name in prev_rows else 0.0
+            diff = current - previous
+            pct = (diff / previous * 100.0) if previous > 0 else None
+            result.append({
+                "name": name, "icon": icon,
+                "current": round(current, 2), "previous": round(previous, 2),
+                "diff": round(diff, 2), "pct": pct,
+            })
+        result.sort(key=lambda r: (-max(r["current"], r["previous"]), r["name"]))
+        return result
+
+    def year_comparison(self, year):
+        """Monatswerte (Einnahmen/Ausgaben) eines Jahres neben denen des
+        Vorjahres sowie Jahressummen.
+
+        Rückgabe: dict mit
+          months  - 12 dicts (month 1-12, income, expense, prev_income, prev_expense)
+          totals  - dict (income, expense, saved, prev_income, prev_expense, prev_saved)
+        Kategorienvergleich Jahr gegen Vorjahr: category_comparison(str(year),
+        str(year - 1)) – die LIKE-Muster akzeptieren auch reine Jahreszahlen."""
+        cur = self.yearly_overview(year)
+        prev = self.yearly_overview(year - 1)
+        months = []
+        for c, p in zip(cur, prev):
+            months.append({
+                "month": c["month"],
+                "income": c["income"], "expense": c["expense"],
+                "prev_income": p["income"], "prev_expense": p["expense"],
+            })
+        income = sum(m["income"] for m in months)
+        expense = sum(m["expense"] for m in months)
+        prev_income = sum(m["prev_income"] for m in months)
+        prev_expense = sum(m["prev_expense"] for m in months)
+        totals = {
+            "income": round(income, 2), "expense": round(expense, 2),
+            "saved": round(income - expense, 2),
+            "prev_income": round(prev_income, 2), "prev_expense": round(prev_expense, 2),
+            "prev_saved": round(prev_income - prev_expense, 2),
+        }
+        return {"months": months, "totals": totals}
+
+    def expense_categories_in_year(self, year):
+        """Ausgabenkategorien, in denen im Jahr mindestens eine Buchung liegt."""
+        cur = self.conn.execute("""
+            SELECT DISTINCT c.name AS category_name, c.icon
+            FROM transactions t JOIN categories c ON t.category_id = c.id
+            WHERE c.kind = 'ausgabe' AND t.amount < 0 AND t.date LIKE ?
+            ORDER BY c.name COLLATE NOCASE
+        """, (f"{year:04d}-%",))
+        return cur.fetchall()
+
+    def category_year_series(self, year, category_name=None):
+        """Ausgaben je Monat (12 Werte, Jan-Dez) für eine Kategorie oder – bei
+        category_name=None – für alle Ausgaben zusammen."""
+        sql = """
+            SELECT CAST(substr(t.date, 6, 2) AS INTEGER) AS m, -SUM(t.amount) AS total
+            FROM transactions t JOIN categories c ON t.category_id = c.id
+            WHERE c.kind = 'ausgabe' AND t.amount < 0 AND t.date LIKE ?
+        """
+        params = [f"{year:04d}-%"]
+        if category_name is not None:
+            sql += " AND c.name = ?"
+            params.append(category_name)
+        sql += " GROUP BY m"
+        by_month = {row["m"]: row["total"] for row in self.conn.execute(sql, params)}
+        return [round(by_month.get(m, 0.0), 2) for m in range(1, 13)]
+
+    # -- Datenbank-Backups -------------------------------------------------------
+
+    @property
+    def backup_dir(self):
+        return self.db_path.parent / "backups"
+
+    def create_db_backup(self, force=False):
+        """Sichert die komplette Datenbank als Kopie nach <Datenordner>/backups/.
+
+        Ohne `force` wird höchstens ein Backup pro Tag angelegt (gedacht für
+        den automatischen Aufruf beim Programmstart). Es werden nur die
+        letzten BACKUP_KEEP Backups behalten. Gibt den Pfad der neuen Datei
+        zurück oder None, wenn heute schon gesichert wurde."""
+        self.backup_dir.mkdir(parents=True, exist_ok=True)
+        today = datetime.date.today().strftime("%Y%m%d")
+        if not force and any(self.backup_dir.glob(f"finanzen-{today}-*.db")):
+            return None
+        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        target = self.backup_dir / f"finanzen-{stamp}.db"
+        dest = sqlite3.connect(str(target))
+        try:
+            self.conn.backup(dest)  # konsistent, auch bei offener Verbindung
+        finally:
+            dest.close()
+        for old in sorted(self.backup_dir.glob("finanzen-*.db"))[:-self.BACKUP_KEEP]:
+            old.unlink(missing_ok=True)
+        return target
+
     # -- Einstellungen / Kontostand ----------------------------------------------
 
     def get_setting(self, key, default=None):
@@ -1042,6 +1362,30 @@ class FinanceStore:
         ).fetchone()
         return round(amount + row["total"], 2)
 
+    # -- Notgroschen als Unterkonto -------------------------------------------
+
+    def notgroschen_pocket_enabled(self):
+        return self.get_setting("notgroschen_pocket", "0") == "1"
+
+    def set_notgroschen_pocket(self, enabled):
+        self.set_setting("notgroschen_pocket", "1" if enabled else "0")
+
+    def get_balance_breakdown(self):
+        """Teilt das Vermögen in Girokonto und (optionales) Notgroschen-
+        Unterkonto. Das Unterkonto entspricht dem angesparten Betrag des
+        Sparziels „Notgroschen“. Girokonto = berechneter Kontostand (gebuchte
+        Sparbeiträge haben ihn bereits reduziert, es wird also nichts doppelt
+        gezählt). None, falls noch kein Startguthaben hinterlegt ist."""
+        giro = self.get_current_account_balance()
+        if giro is None:
+            return None
+        pocket = 0.0
+        if self.notgroschen_pocket_enabled():
+            goal = self.get_goal_by_name("Notgroschen")
+            if goal:
+                pocket = round(float(goal["current_amount"]), 2)
+        return {"giro": giro, "pocket": pocket, "total": round(giro + pocket, 2)}
+
     # -- Export / Import ----------------------------------------------------------
 
     def export_transactions_csv(self, path):
@@ -1058,13 +1402,44 @@ class FinanceStore:
     # Spaltennamen-Synonyme (klein geschrieben, ohne Leerzeichen) für den CSV-Import,
     # damit auch Exporte aus anderen Haushaltsbuch-/Banking-Programmen erkannt werden.
     _CSV_COLUMN_ALIASES = {
-        "date": {"datum", "date", "buchungsdatum", "wertstellung"},
-        "amount": {"betrag", "amount", "wert", "umsatz", "value"},
+        "date": {"datum", "date", "buchungsdatum", "wertstellung", "buchungstag", "valuta"},
+        "amount": {"betrag", "amount", "wert", "umsatz", "value", "betrag (eur)",
+                    "betrag in eur", "umsatz in eur"},
         "category": {"kategorie", "category", "kategorie/typ"},
         "kind": {"art", "kind", "type", "typ"},
         "description": {"beschreibung", "description", "verwendungszweck", "notiz",
                          "note", "buchungstext", "text"},
+        "payee": {"empfänger", "zahlungsempfänger", "beguenstigter/zahlungspflichtiger",
+                   "begünstigter/zahlungspflichtiger", "auftraggeber", "payee", "name"},
     }
+
+    # Stichwort-Regeln für Zeilen ohne Kategorie-Spalte (Bank-Exporte): Treffer im
+    # Empfänger/Verwendungszweck ordnen die Buchung einer Standardkategorie zu.
+    # (Kategorie, Art, Symbol, Stichwörter in Kleinbuchstaben)
+    _CSV_KEYWORD_RULES = [
+        ("Gehalt", "einnahme", "💼", ("gehalt", "lohn", "bezüge", "salary")),
+        ("Lebensmittel", "ausgabe", "🛒", ("rewe", "edeka", "aldi", "lidl", "penny", "netto",
+                                           "kaufland", "dm drogerie", "rossmann", "bäckerei",
+                                           "backerei", "supermarkt")),
+        ("Transport", "ausgabe", "🚌", ("tankstelle", "aral", "shell", "esso", "bahn",
+                                         "db vertrieb", "bvg", "mvg", "bus", "taxi", "uber",
+                                         "deutschlandticket")),
+        ("Versicherungen", "ausgabe", "🛡️", ("versicherung", "allianz", "huk", "haftpflicht",
+                                              "krankenkasse")),
+        ("Miete", "ausgabe", "🏠", ("miete", "hausverwaltung", "wohnungsbau")),
+        ("Freizeit", "ausgabe", "🎉", ("netflix", "spotify", "kino", "cafe", "café",
+                                        "restaurant", "steam", "disney", "fitness")),
+    ]
+
+    @classmethod
+    def _guess_category(cls, text, kind):
+        """Liefert (name, icon) einer Standardkategorie anhand von Stichwörtern
+        oder None, wenn keine Regel passt (dann greift 'Sonstige …')."""
+        lowered = (text or "").lower()
+        for name, rule_kind, icon, keywords in cls._CSV_KEYWORD_RULES:
+            if rule_kind == kind and any(k in lowered for k in keywords):
+                return name, icon
+        return None
 
     @staticmethod
     def _match_columns(fieldnames):
@@ -1122,8 +1497,15 @@ class FinanceStore:
         (Art wird aus der Art-Spalte übernommen, falls vorhanden, sonst aus
         dem Vorzeichen des Betrags abgeleitet).
 
-        Rückgabe: dict mit imported (Anzahl), skipped (Anzahl übersprungener
-        Zeilen) und errors (Liste von Fehlertexten mit Zeilennummer)."""
+        Zeilen ohne Kategorie werden per Stichwortregeln (z. B. "REWE" ->
+        Lebensmittel) einer Standardkategorie zugeordnet. Bereits vorhandene
+        Buchungen (gleiches Datum, gleicher Betrag, gleiche Beschreibung)
+        werden nicht doppelt angelegt, sodass derselbe Kontoauszug gefahrlos
+        mehrfach importiert werden kann.
+
+        Rückgabe: dict mit imported (Anzahl), skipped (Anzahl nicht lesbarer
+        Zeilen), duplicates (Anzahl erkannter Duplikate) und errors (Liste von
+        Fehlertexten mit Zeilennummer)."""
         with open(path, "r", newline="", encoding="utf-8-sig") as f:
             sample = f.read(4096)
             f.seek(0)
@@ -1145,7 +1527,17 @@ class FinanceStore:
 
             imported = 0
             skipped = 0
+            duplicates = 0
             errors = []
+
+            # Vorhandene Buchungen vor dem Import zählen. Pro Treffer wird ein
+            # Eintrag "verbraucht"; so bleiben zwei echte gleiche Zeilen in
+            # einer Datei (zwei Kaffee am selben Tag) erhalten, ein zweiter
+            # Import derselben Datei legt aber nichts doppelt an.
+            existing = collections.Counter(
+                (r["date"], round(r["amount"], 2), r["description"] or "")
+                for r in self.conn.execute(
+                    "SELECT date, amount, description FROM transactions"))
 
             for line_number, row in enumerate(reader, start=2):
                 date_obj = self._parse_csv_date(row.get(columns["date"], ""))
@@ -1163,19 +1555,39 @@ class FinanceStore:
                 else:
                     kind = "einnahme" if amount >= 0 else "ausgabe"
 
-                category_name = (row.get(columns.get("category"), "") or "").strip() \
-                    if "category" in columns else ""
-                if not category_name:
-                    category_name = "Sonstige Einnahmen" if kind == "einnahme" else "Sonstige Ausgaben"
-                category = self.get_or_create_category(category_name, kind, DEFAULT_ICON)
+                # Vorzeichen passend zur Art vereinheitlichen (Ausgaben negativ).
+                amount = -abs(amount) if kind == "ausgabe" else abs(amount)
 
                 description = (row.get(columns.get("description"), "") or "").strip() \
                     if "description" in columns else ""
+                payee = (row.get(columns.get("payee"), "") or "").strip() \
+                    if "payee" in columns else ""
+                if payee and payee.lower() not in description.lower():
+                    description = f"{payee} – {description}" if description else payee
+
+                key = (date_obj.isoformat(), round(amount, 2), description)
+                if existing[key] > 0:
+                    existing[key] -= 1
+                    duplicates += 1
+                    continue
+
+                category_name = (row.get(columns.get("category"), "") or "").strip() \
+                    if "category" in columns else ""
+                icon = DEFAULT_ICON
+                if not category_name:
+                    guess = self._guess_category(description, kind)
+                    if guess:
+                        category_name, icon = guess
+                    else:
+                        category_name = ("Sonstige Einnahmen" if kind == "einnahme"
+                                         else "Sonstige Ausgaben")
+                category = self.get_or_create_category(category_name, kind, icon)
 
                 self.add_transaction(date_obj.isoformat(), amount, category["id"], description)
                 imported += 1
 
-            return {"imported": imported, "skipped": skipped, "errors": errors}
+            return {"imported": imported, "skipped": skipped,
+                    "duplicates": duplicates, "errors": errors}
 
     def export_backup_json(self, path):
         data = {
@@ -1186,6 +1598,8 @@ class FinanceStore:
             "savings_goals": [dict(r) for r in self.conn.execute("SELECT * FROM savings_goals")],
             "savings_contributions": [dict(r) for r in self.conn.execute("SELECT * FROM savings_contributions")],
             "etf_plans": [dict(r) for r in self.conn.execute("SELECT * FROM etf_plans")],
+            "quick_templates": [dict(r) for r in self.conn.execute("SELECT * FROM quick_templates")],
+            "settings": [dict(r) for r in self.conn.execute("SELECT * FROM settings")],
             "exported_at": datetime.datetime.now().isoformat(),
         }
         with open(path, "w", encoding="utf-8") as f:
@@ -1199,7 +1613,11 @@ class FinanceStore:
         c = self.conn
         c.execute("PRAGMA foreign_keys = OFF")
         tables = ["savings_contributions", "savings_goals", "budgets", "transactions",
-                  "recurring_templates", "etf_plans", "categories"]
+                  "recurring_templates", "etf_plans", "quick_templates", "categories"]
+        # Einstellungen (z. B. Startguthaben) nur ersetzen, wenn das Backup sie
+        # enthält; ältere Backups kennen sie nicht und sollen sie nicht löschen.
+        if "settings" in data:
+            tables.append("settings")
         for table in tables:
             c.execute(f"DELETE FROM {table}")
 
@@ -1221,6 +1639,8 @@ class FinanceStore:
         insert_all("savings_goals", data.get("savings_goals", []))
         insert_all("savings_contributions", data.get("savings_contributions", []))
         insert_all("etf_plans", data.get("etf_plans", []))
+        insert_all("quick_templates", data.get("quick_templates", []))
+        insert_all("settings", data.get("settings", []))
 
         c.execute("PRAGMA foreign_keys = ON")
         c.commit()

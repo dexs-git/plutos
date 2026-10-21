@@ -24,33 +24,43 @@ Start:
 
 import sys
 import datetime
+import re
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QTabWidget, QLabel, QPushButton, QComboBox, QDoubleSpinBox, QSpinBox,
     QCheckBox, QLineEdit, QTableWidget, QTableWidgetItem, QHeaderView,
     QAbstractItemView, QCalendarWidget, QScrollArea, QStackedWidget, QFileDialog,
-    QMessageBox, QGroupBox, QProgressBar, QSizePolicy, QDateEdit,
+    QMessageBox, QGroupBox, QProgressBar, QSizePolicy, QDateEdit, QInputDialog,
 )
 from PySide6.QtCore import Qt, QDate
-from PySide6.QtGui import QColor, QTextCharFormat
+from PySide6.QtGui import QColor, QTextCharFormat, QPalette, QShortcut, QKeySequence
 
 from db import FinanceStore, add_months
+from i18n import tr, set_language, get_language, LANGUAGES, months, months_short, weekdays, weekdays_short
 from charts import (
     PieChartWidget, TrendChartWidget, SankeyWidget, EtfComparisonWidget,
+    CategoryCompareWidget, CategoryYearWidget, YearCompareWidget, format_delta,
     fmt_amount, color_for_index,
 )
 from dialogs import (
     TransactionDialog, RecurringTemplatesDialog, BudgetDialog, GoalDialog,
-    ContributionDialog, CategoryManagerDialog, make_help_button,
+    ContributionDialog, CategoryManagerDialog, QuickTemplatesDialog, make_help_button,
 )
 
-GERMAN_MONTHS = ["Januar", "Februar", "März", "April", "Mai", "Juni", "Juli",
-                  "August", "September", "Oktober", "November", "Dezember"]
+
+
+
+def _localize_import_error(line):
+    """Fehlertexte aus db.py sind deutsch; hier passend zur Sprache ausgeben."""
+    m = re.match(r"^Zeile (\d+): Datum oder Betrag nicht lesbar, übersprungen\.$", line)
+    if m:
+        return tr("Zeile {0}: Datum oder Betrag nicht lesbar, übersprungen.").format(m.group(1))
+    return line
 
 
 def month_label(date_obj):
-    return f"{GERMAN_MONTHS[date_obj.month - 1]} {date_obj.year}"
+    return f"{months()[date_obj.month - 1]} {date_obj.year}"
 
 
 def _qdate_to_date(qdate: QDate) -> datetime.date:
@@ -61,6 +71,21 @@ def _date_to_qdate(d: datetime.date) -> QDate:
     return QDate(d.year, d.month, d.day)
 
 
+def _themed_hint_html(html, palette):
+    """Ersetzt die festen Hinweisfarben (für dunkle Themes gewählt) durch Farben
+    aus der aktuellen Palette, damit Hinweise auch im hellen Modus lesbar
+    sind: 'stark' = Textfarbe, 'gedämpft' = Textfarbe leicht zum Hintergrund
+    gemischt."""
+    text = palette.color(QPalette.WindowText)
+    bg = palette.color(QPalette.Window)
+    soft = QColor(int(text.red() * 0.72 + bg.red() * 0.28),
+                  int(text.green() * 0.72 + bg.green() * 0.28),
+                  int(text.blue() * 0.72 + bg.blue() * 0.28))
+    for old in ("#d8dee9", "#c8ced6"):
+        html = html.replace(old, text.name())
+    return html.replace("#aeb6c0", soft.name())
+
+
 # ---------------------------------------------------------------------------
 # Hauptfenster
 # ---------------------------------------------------------------------------
@@ -68,11 +93,16 @@ def _date_to_qdate(d: datetime.date) -> QDate:
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Plutos – Das Haushaltsbuch")
         self.resize(1080, 700)
 
         self.store = FinanceStore()
+        set_language(self.store.get_setting("language", "de"))
+        self.setWindowTitle(tr('Plutos – Das Haushaltsbuch'))
         self.store.ensure_horizon(datetime.date.today())
+        try:  # tägliches automatisches Datenbank-Backup; darf den Start nie verhindern
+            self.store.create_db_backup()
+        except Exception as exc:
+            print(f"Automatisches Backup fehlgeschlagen: {exc}")
 
         self.selected_day = datetime.date.today()
         self.stats_month = datetime.date.today().replace(day=1)
@@ -83,14 +113,21 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
 
-        self.tabs.addTab(self._build_transactions_tab(), "Buchungen")
-        self.tabs.addTab(self._build_budgets_tab(), "Budgets")
-        self.tabs.addTab(self._build_goals_tab(), "Sparziele")
-        self.tabs.addTab(self._build_planning_tab(), "Finanzplanung")
+        self.tabs.addTab(self._build_transactions_tab(), tr('Buchungen'))
+        self.tabs.addTab(self._build_budgets_tab(), tr('Budgets'))
+        self.tabs.addTab(self._build_goals_tab(), tr('Sparziele'))
+        self.tabs.addTab(self._build_planning_tab(), tr('Finanzplanung'))
         self.etf_tab_index = self.tabs.count()
-        self.tabs.addTab(self._build_etf_tab(), "ETF-Sparplan")
-        self.tabs.addTab(self._build_stats_tab(), "Auswertungen")
-        self.tabs.addTab(self._build_export_tab(), "Export / Import")
+        self.tabs.addTab(self._build_etf_tab(), tr('ETF-Sparplan'))
+        self.tabs.addTab(self._build_stats_tab(), tr('Auswertungen'))
+        self.tabs.addTab(self._build_search_tab(), tr('Suche'))
+        self.tabs.addTab(self._build_export_tab(), tr('Export / Import'))
+
+        # Feste (dunkel gewählte) Hinweisfarben an das aktuelle Theme anpassen.
+        for label in self.findChildren(QLabel):
+            html = label.text()
+            if "#aeb6c0" in html or "#c8ced6" in html or "#d8dee9" in html:
+                label.setText(_themed_hint_html(html, label.palette()))
 
     # =====================================================================
     # Tab 1: Buchungen (Kalenderansicht: Monat/Woche/Jahr)
@@ -107,9 +144,9 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(left_widget)
 
         self.view_switch_combo = QComboBox()
-        self.view_switch_combo.addItem("Monatsansicht", "monat")
-        self.view_switch_combo.addItem("Wochenansicht", "woche")
-        self.view_switch_combo.addItem("Jahresansicht", "jahr")
+        self.view_switch_combo.addItem(tr('Monatsansicht'), "monat")
+        self.view_switch_combo.addItem(tr('Wochenansicht'), "woche")
+        self.view_switch_combo.addItem(tr('Jahresansicht'), "jahr")
         self.view_switch_combo.currentIndexChanged.connect(self._on_view_switch_changed)
         left_layout.addWidget(self.view_switch_combo)
 
@@ -120,7 +157,7 @@ class MainWindow(QMainWindow):
         self.view_stack.addWidget(self._build_week_page())
         self.view_stack.addWidget(self._build_year_page())
 
-        manage_cat_btn = QPushButton("Kategorien verwalten")
+        manage_cat_btn = QPushButton(tr('Kategorien verwalten'))
         manage_cat_btn.clicked.connect(self._on_manage_categories)
         left_layout.addWidget(manage_cat_btn)
         left_layout.addStretch()
@@ -138,35 +175,52 @@ class MainWindow(QMainWindow):
 
         self.day_table = QTableWidget(0, 5)
         self.day_table.setHorizontalHeaderLabels(
-            ["Kategorie", "Art", "Betrag", "Beschreibung", "Wiederk."])
+            [tr('Kategorie'), tr('Art'), tr('Betrag'), tr('Beschreibung'), tr('Wiederk.')])
         self.day_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
         self.day_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.day_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.day_table.itemDoubleClicked.connect(self._on_edit_transaction_item)
         right_layout.addWidget(self.day_table)
 
-        hint = QLabel("Tipp: Doppelklick auf eine Buchung öffnet sie zum Bearbeiten.")
+        hint = QLabel(tr('Tipp: Doppelklick auf eine Buchung öffnet sie zum Bearbeiten.'))
         right_layout.addWidget(hint)
 
         btn_box = QHBoxLayout()
         right_layout.addLayout(btn_box)
 
-        add_btn = QPushButton("Buchung hinzufügen")
+        add_btn = QPushButton(tr('Buchung hinzufügen'))
         add_btn.clicked.connect(self._on_add_transaction)
         btn_box.addWidget(add_btn)
 
-        edit_btn = QPushButton("Bearbeiten")
+        edit_btn = QPushButton(tr('Bearbeiten'))
         edit_btn.clicked.connect(self._on_edit_selected_transaction)
         btn_box.addWidget(edit_btn)
 
-        del_btn = QPushButton("Löschen")
+        del_btn = QPushButton(tr('Löschen'))
         del_btn.clicked.connect(self._on_delete_transaction)
         btn_box.addWidget(del_btn)
 
-        rec_btn = QPushButton("Wiederkehrende Vorlagen verwalten")
+        rec_btn = QPushButton(tr('Wiederkehrende Vorlagen verwalten'))
         rec_btn.clicked.connect(self._on_manage_recurring)
         btn_box.addWidget(rec_btn)
         btn_box.addStretch()
+
+        btn_box2 = QHBoxLayout()
+        right_layout.addLayout(btn_box2)
+        self.undo_btn = QPushButton(tr('Rückgängig'))
+        self.undo_btn.setToolTip(tr('Zuletzt gelöschte Buchung wiederherstellen (Strg+Z)'))
+        self.undo_btn.setEnabled(False)
+        self.undo_btn.clicked.connect(self._on_undo_delete)
+        btn_box2.addWidget(self.undo_btn)
+        save_tpl_btn = QPushButton(tr('Als Vorlage speichern'))
+        save_tpl_btn.setToolTip(tr('Die markierte Buchung als Schnellbuchungs-Vorlage merken'))
+        save_tpl_btn.clicked.connect(self._on_save_quick_template)
+        btn_box2.addWidget(save_tpl_btn)
+        use_tpl_btn = QPushButton(tr('Aus Vorlage buchen…'))
+        use_tpl_btn.clicked.connect(self._on_book_from_template)
+        btn_box2.addWidget(use_tpl_btn)
+        btn_box2.addStretch()
+        QShortcut(QKeySequence("Ctrl+Z"), self, activated=self._on_undo_delete)
 
         self._refresh_calendar_marks()
         self._refresh_day_list()
@@ -191,15 +245,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.month_balance_label)
 
         legend = QLabel(
-    """
-    <b><font color="#d8dee9">Hinweise</font></b><br>
-    <b><font color="#c8ced6">Fett</font></b>
-    <font color="#aeb6c0"> – Buchungen an diesem Tag</font><br>
-    <b><font color="#c8ced6">Einfachklick</font></b>
-    <font color="#aeb6c0"> – Buchungen des Tages anzeigen</font><br>
-    <b><font color="#c8ced6">Doppelklick / Enter</font></b>
-    <font color="#aeb6c0"> – neue Buchung für dieses Datum anlegen</font>
-    """
+    tr('\n    <b><font color="#d8dee9">Hinweise</font></b><br>\n    <b><font color="#c8ced6">Fett</font></b>\n    <font color="#aeb6c0"> – Buchungen an diesem Tag</font><br>\n    <b><font color="#c8ced6">Einfachklick</font></b>\n    <font color="#aeb6c0"> – Buchungen des Tages anzeigen</font><br>\n    <b><font color="#c8ced6">Doppelklick / Enter</font></b>\n    <font color="#aeb6c0"> – neue Buchung für dieses Datum anlegen</font>\n    ')
 )
 
         legend.setWordWrap(True)
@@ -221,7 +267,7 @@ class MainWindow(QMainWindow):
         next_btn = QPushButton("▶")
         next_btn.clicked.connect(lambda: self._shift_week(1))
         nav.addWidget(next_btn)
-        today_btn = QPushButton("Diese Woche")
+        today_btn = QPushButton(tr('Diese Woche'))
         today_btn.clicked.connect(self._goto_current_week)
         nav.addWidget(today_btn)
         nav.addStretch()
@@ -238,13 +284,7 @@ class MainWindow(QMainWindow):
             self.week_day_buttons.append(btn)
 
         hint = QLabel(
-    """
-    <font color="#aeb6c0">
-        <b><font color="#c8ced6">Klick auf einen Tag</font></b>
-        – Buchungen des Tages rechts anzeigen.<br>
-        Monatsübersicht und Budgets folgen automatisch der angezeigten Woche.
-    </font>
-    """
+    tr('\n    <font color="#aeb6c0">\n        <b><font color="#c8ced6">Klick auf einen Tag</font></b>\n        – Buchungen des Tages rechts anzeigen.<br>\n        Monatsübersicht und Budgets folgen automatisch der angezeigten Woche.\n    </font>\n    ')
 )
         hint.setWordWrap(True)
         layout.addWidget(hint)
@@ -280,10 +320,7 @@ class MainWindow(QMainWindow):
             self.year_month_buttons.append(btn)
 
         hint = QLabel(
-    """
-    <b><font color="#c8ced6">Klick auf einen Monat</font></b>
-    <font color="#aeb6c0"> – wechselt in die Monatsansicht.</font>
-    """
+    tr('\n    <b><font color="#c8ced6">Klick auf einen Monat</font></b>\n    <font color="#aeb6c0"> – wechselt in die Monatsansicht.</font>\n    ')
 )
         hint.setWordWrap(True)
         layout.addWidget(hint)
@@ -350,15 +387,11 @@ class MainWindow(QMainWindow):
         saldo = income - expense
         sign = "+" if saldo >= 0 else ""
         self.month_balance_label.setText(
-            f"{month_label(month_start)}\n"
-            f"Einnahmen: {fmt_amount(income)}\n"
-            f"Ausgaben: {fmt_amount(expense)}\n"
-            f"Saldo: {sign}{fmt_amount(saldo)}"
+            tr('{0}\nEinnahmen: {1}\nAusgaben: {2}\nSaldo: {3}{4}').format(month_label(month_start), fmt_amount(income), fmt_amount(expense), sign, fmt_amount(saldo))
         )
 
     def _refresh_day_list(self):
-        weekday_names = ["Montag", "Dienstag", "Mittwoch", "Donnerstag",
-                          "Freitag", "Samstag", "Sonntag"]
+        weekday_names = weekdays()
         d = self.selected_day
         self.day_title_label.setText(f"{weekday_names[d.weekday()]}, {d.strftime('%d.%m.%Y')}")
 
@@ -369,7 +402,7 @@ class MainWindow(QMainWindow):
             cat_item.setData(Qt.UserRole, r["id"])
             self.day_table.setItem(row_idx, 0, cat_item)
             self.day_table.setItem(row_idx, 1, QTableWidgetItem(
-                "Einnahme" if r["kind"] == "einnahme" else "Ausgabe"))
+                tr('Einnahme') if r["kind"] == "einnahme" else tr('Ausgabe')))
             amount_item = QTableWidgetItem(fmt_amount(r["amount"]))
             amount_item.setForeground(QColor(30, 140, 61) if r["amount"] >= 0 else QColor(191, 56, 38))
             self.day_table.setItem(row_idx, 2, amount_item)
@@ -389,6 +422,7 @@ class MainWindow(QMainWindow):
         if dialog.exec() == TransactionDialog.Accepted:
             dialog.save()
             self._after_transactions_changed()
+            self._warn_if_budget_crossed(dialog.last_saved, is_new=True)
 
     def _on_edit_selected_transaction(self):
         tx_id = self._selected_transaction_id()
@@ -406,12 +440,74 @@ class MainWindow(QMainWindow):
         if dialog.exec() == TransactionDialog.Accepted:
             dialog.save()
             self._after_transactions_changed()
+            self._warn_if_budget_crossed(dialog.last_saved, is_new=False)
 
     def _on_delete_transaction(self):
         tx_id = self._selected_transaction_id()
         if tx_id is not None:
             self.store.delete_transaction(tx_id)
+            self.undo_btn.setEnabled(True)
             self._after_transactions_changed()
+
+    def _on_undo_delete(self):
+        if not self.store.can_undo_delete():
+            return
+        restored = self.store.undo_delete_transaction()
+        self.undo_btn.setEnabled(False)
+        if restored:
+            self.store.ensure_horizon(datetime.date.fromisoformat(restored["date"]))
+            self._after_transactions_changed()
+            self._refresh_stats()
+
+    def _on_save_quick_template(self):
+        tx_id = self._selected_transaction_id()
+        if tx_id is None:
+            QMessageBox.information(self, tr('Als Vorlage speichern'),
+                                    tr('Bitte zuerst in der Liste eine Buchung markieren.'))
+            return
+        tx = self.store.get_transaction(tx_id)
+        default_name = tx["description"] or tr("Vorlage")
+        name, ok = QInputDialog.getText(self, tr('Als Vorlage speichern'),
+                                        tr('Name der Vorlage:'), text=default_name)
+        if ok and name.strip():
+            self.store.add_quick_template(name, tx["category_id"], tx["amount"],
+                                          tx["description"])
+
+    def _on_book_from_template(self):
+        dialog = QuickTemplatesDialog(self, self.store, self.selected_day)
+        dialog.exec()
+        if dialog.booked:
+            self._after_transactions_changed()
+            self._refresh_stats()
+            for saved in dialog.booked:
+                self._warn_if_budget_crossed(saved, is_new=True)
+
+    def _warn_if_budget_crossed(self, saved, is_new):
+        """Zeigt einen Hinweis, wenn eine Ausgabe das Monatsbudget ihrer
+        Kategorie über 80 % bzw. 100 % hebt (nur beim Überschreiten einer
+        Schwelle, nicht bei jeder weiteren Buchung)."""
+        if not saved or saved["amount"] >= 0:
+            return
+        month = saved["date"][:7]
+        status = self.store.budget_status(saved["category_id"], month)
+        if not status:
+            return
+        before = self.store.budget_level(status["spent"] - (-saved["amount"] if is_new else 0),
+                                         status["limit"])
+        after = status["level"]
+        if after == before or after not in ("warn", "over"):
+            return
+        category = next((c for c in self.store.list_categories()
+                         if c["id"] == saved["category_id"]), None)
+        name = category["name"] if category else tr('Kategorie')
+        percent = status["spent"] / status["limit"] * 100
+        text = (tr('Budget „{0}“ ({1}/{2}): {3} von {4} ({5:.0f} %).').format(name, month[5:], month[:4], fmt_amount(status['spent']), fmt_amount(status['limit']), percent))
+        if after == "over":
+            QMessageBox.warning(self, tr('Budget überschritten'),
+                                text + tr('\nDas Budget ist um {0} überschritten.').format(fmt_amount(status['spent'] - status['limit'])))
+        else:
+            QMessageBox.information(self, tr('Budget fast aufgebraucht'),
+                                    text + tr("\nDie 80-%-Marke ist erreicht."))
 
     def _on_manage_recurring(self):
         dialog = RecurringTemplatesDialog(self, self.store)
@@ -423,6 +519,8 @@ class MainWindow(QMainWindow):
         dialog = CategoryManagerDialog(self, self.store)
         dialog.exec()
         self._refresh_day_list()
+        self._reload_search_categories()
+        self._run_search()
 
     def _after_transactions_changed(self):
         self._refresh_calendar_marks()
@@ -432,6 +530,7 @@ class MainWindow(QMainWindow):
         self._refresh_week_view()
         self._refresh_year_view()
         self._refresh_current_balance_display()
+        self._run_search()
 
     # -- Wochenansicht --------------------------------------------------
 
@@ -458,7 +557,7 @@ class MainWindow(QMainWindow):
     def _refresh_week_view(self):
         if not hasattr(self, "week_range_label"):
             return
-        weekday_names = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
+        weekday_names = weekdays_short()
         start = self.week_start
         end = start + datetime.timedelta(days=6)
         self.week_range_label.setText(f"{start.strftime('%d.%m.')} – {end.strftime('%d.%m.%Y')}")
@@ -490,7 +589,7 @@ class MainWindow(QMainWindow):
             saldo = data["income"] - data["expense"]
             has_data = bool(data["income"] or data["expense"])
             text = fmt_amount(saldo) if has_data else "–"
-            name = GERMAN_MONTHS[i][:3]
+            name = months()[i][:3]
             btn.setText(f"{name}\n{text}")
 
     def _on_year_month_clicked(self, month):
@@ -509,13 +608,13 @@ class MainWindow(QMainWindow):
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
-        info = QLabel("Budgets gelten für den im Buchungen-Tab im Kalender sichtbaren Monat.")
+        info = QLabel(tr('Budgets gelten für den im Buchungen-Tab im Kalender sichtbaren Monat.'))
         info.setWordWrap(True)
         layout.addWidget(info)
 
         self.budget_table = QTableWidget(0, 5)
         self.budget_table.setHorizontalHeaderLabels(
-            ["Kategorie", "Budget", "Ausgegeben", "Verbleibend", "Fortschritt"])
+            [tr('Kategorie'), tr('Budget'), tr('Ausgegeben'), tr('Verbleibend'), tr('Fortschritt')])
         self.budget_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.budget_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.budget_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -523,10 +622,10 @@ class MainWindow(QMainWindow):
 
         btn_box = QHBoxLayout()
         layout.addLayout(btn_box)
-        set_btn = QPushButton("Budget setzen/ändern")
+        set_btn = QPushButton(tr('Budget setzen/ändern'))
         set_btn.clicked.connect(self._on_set_budget)
         btn_box.addWidget(set_btn)
-        refresh_btn = QPushButton("Aktualisieren")
+        refresh_btn = QPushButton(tr('Aktualisieren'))
         refresh_btn.clicked.connect(self._refresh_budgets_tab)
         btn_box.addWidget(refresh_btn)
         btn_box.addStretch()
@@ -547,8 +646,9 @@ class MainWindow(QMainWindow):
             spent = r["spent"]
             progress = QProgressBar()
             progress.setTextVisible(True)
+            progress.setAlignment(Qt.AlignCenter)
             if limit_amount is None:
-                self.budget_table.setItem(i, 1, QTableWidgetItem("— kein Budget —"))
+                self.budget_table.setItem(i, 1, QTableWidgetItem(tr('— kein Budget —')))
                 self.budget_table.setItem(i, 2, QTableWidgetItem(fmt_amount(spent)))
                 self.budget_table.setItem(i, 3, QTableWidgetItem("–"))
                 progress.setValue(0)
@@ -559,6 +659,15 @@ class MainWindow(QMainWindow):
                 self.budget_table.setItem(i, 2, QTableWidgetItem(fmt_amount(spent)))
                 self.budget_table.setItem(i, 3, QTableWidgetItem(fmt_amount(remaining)))
                 progress.setValue(fraction)
+                level = self.store.budget_level(spent, limit_amount)
+                chunk = {"warn": "#e0a030", "over": "#d9483b"}.get(level)
+                if chunk:
+                    progress.setStyleSheet(f"QProgressBar::chunk {{ background: {chunk}; }}")
+                if level == "over":
+                    self.budget_table.item(i, 3).setForeground(QColor(224, 82, 69))
+                    self.budget_table.item(i, 2).setForeground(QColor(224, 82, 69))
+                elif level == "warn":
+                    self.budget_table.item(i, 2).setForeground(QColor(224, 160, 48))
             self.budget_table.setCellWidget(i, 4, progress)
 
     def _on_set_budget(self):
@@ -578,25 +687,14 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(widget)
 
         info = QLabel(
-    """
-    <font color="#aeb6c0">
-        Die Reihenfolge legt fest, in welcher Priorität die
-        Finanzplanungsempfehlung das
-        <b><font color="#c8ced6">Startkapital / den Sparbetrag</font></b>
-        auf die Ziele verteilt.
-        <b><font color="#c8ced6">Oben</font></b> = zuerst befüllt.<br>
-        Mit <b><font color="#c8ced6">„Nach oben“</font></b> /
-        <b><font color="#c8ced6">„Nach unten“</font></b>
-        frei sortierbar.
-    </font>
-    """
+    tr('\n    <font color="#aeb6c0">\n        Die Reihenfolge legt fest, in welcher Priorität die\n        Finanzplanungsempfehlung das\n        <b><font color="#c8ced6">Startkapital / den Sparbetrag</font></b>\n        auf die Ziele verteilt.\n        <b><font color="#c8ced6">Oben</font></b> = zuerst befüllt.<br>\n        Mit <b><font color="#c8ced6">„Nach oben“</font></b> /\n        <b><font color="#c8ced6">„Nach unten“</font></b>\n        frei sortierbar.\n    </font>\n    ')
 )
         info.setWordWrap(True)
         layout.addWidget(info)
 
         self.goal_table = QTableWidget(0, 5)
         self.goal_table.setHorizontalHeaderLabels(
-            ["Priorität / Ziel", "Zielbetrag", "Angespart", "Zieldatum", "Fortschritt"])
+            [tr('Priorität / Ziel'), tr('Zielbetrag'), tr('Angespart'), tr('Zieldatum'), tr('Fortschritt')])
         self.goal_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.goal_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.goal_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -604,19 +702,19 @@ class MainWindow(QMainWindow):
 
         btn_box = QHBoxLayout()
         layout.addLayout(btn_box)
-        add_btn = QPushButton("Ziel hinzufügen")
+        add_btn = QPushButton(tr('Ziel hinzufügen'))
         add_btn.clicked.connect(self._on_add_goal)
         btn_box.addWidget(add_btn)
-        contrib_btn = QPushButton("Einzahlen")
+        contrib_btn = QPushButton(tr('Einzahlen'))
         contrib_btn.clicked.connect(self._on_add_contribution)
         btn_box.addWidget(contrib_btn)
-        del_btn = QPushButton("Ziel löschen")
+        del_btn = QPushButton(tr('Ziel löschen'))
         del_btn.clicked.connect(self._on_delete_goal)
         btn_box.addWidget(del_btn)
-        up_btn = QPushButton("▲ Nach oben")
+        up_btn = QPushButton(tr('▲ Nach oben'))
         up_btn.clicked.connect(lambda: self._on_move_goal_priority(-1))
         btn_box.addWidget(up_btn)
-        down_btn = QPushButton("▼ Nach unten")
+        down_btn = QPushButton(tr('▼ Nach unten'))
         down_btn.clicked.connect(lambda: self._on_move_goal_priority(1))
         btn_box.addWidget(down_btn)
         btn_box.addStretch()
@@ -702,11 +800,11 @@ class MainWindow(QMainWindow):
         outer.setWidget(container)
 
         # -- Abschnitt: Kontostand --
-        balance_group = QGroupBox("Kontostand")
+        balance_group = QGroupBox(tr('Kontostand'))
         layout.addWidget(balance_group)
         balance_grid = QGridLayout(balance_group)
 
-        balance_grid.addWidget(QLabel("Stichtag:"), 0, 0)
+        balance_grid.addWidget(QLabel(tr('Stichtag:')), 0, 0)
         existing_amount, existing_date = self.store.get_starting_balance()
         self.balance_date_edit = QDateEdit()
         self.balance_date_edit.setCalendarPopup(True)
@@ -717,21 +815,17 @@ class MainWindow(QMainWindow):
             self.balance_date_edit.setDate(QDate.currentDate())
         balance_grid.addWidget(self.balance_date_edit, 0, 1)
 
-        balance_grid.addWidget(QLabel("Kontostand an diesem Tag (€):"), 1, 0)
+        balance_grid.addWidget(QLabel(tr('Kontostand an diesem Tag (€):')), 1, 0)
         self.balance_amount_spin = QDoubleSpinBox()
         self.balance_amount_spin.setRange(-1_000_000, 10_000_000)
         self.balance_amount_spin.setDecimals(2)
         self.balance_amount_spin.setValue(existing_amount or 0)
         balance_grid.addWidget(self.balance_amount_spin, 1, 1)
         balance_grid.addWidget(make_help_button(
-            "Dein tatsächliches Kontoguthaben an einem bestimmten Tag (z. B. "
-            "heute) – nicht nur die in Plutos erfassten Buchungen. Der "
-            "aktuelle Kontostand wird daraus als Startguthaben + alle "
-            "Buchungen ab diesem Stichtag berechnet, du musst also nicht "
-            "jede einzelne Buchung seit Kontoeröffnung nacherfassen."
+            tr('Dein tatsächliches Kontoguthaben an einem bestimmten Tag (z. B. heute) – nicht nur die in Plutos erfassten Buchungen. Der aktuelle Kontostand wird daraus als Startguthaben + alle Buchungen ab diesem Stichtag berechnet, du musst also nicht jede einzelne Buchung seit Kontoeröffnung nacherfassen.')
         ), 1, 2)
 
-        save_balance_btn = QPushButton("Speichern")
+        save_balance_btn = QPushButton(tr('Speichern'))
         save_balance_btn.clicked.connect(self._on_save_starting_balance)
         balance_grid.addWidget(save_balance_btn, 2, 0, 1, 3)
 
@@ -739,54 +833,50 @@ class MainWindow(QMainWindow):
         self.current_balance_label.setWordWrap(True)
         balance_grid.addWidget(self.current_balance_label, 3, 0, 1, 3)
 
+        self.pocket_check = QCheckBox(tr('Notgroschen als eigenes Unterkonto führen (z. B. Tagesgeld)'))
+        self.pocket_check.setChecked(self.store.notgroschen_pocket_enabled())
+        self.pocket_check.toggled.connect(self._on_toggle_pocket)
+        balance_grid.addWidget(self.pocket_check, 5, 0, 1, 3)
+
         apply_balance_btn = QPushButton(
-            "Aktuellen Kontostand als Startkapital in der Empfehlung übernehmen")
+            tr('Aktuellen Kontostand als Startkapital in der Empfehlung übernehmen'))
         apply_balance_btn.clicked.connect(self._on_apply_balance_to_recommendation)
         balance_grid.addWidget(apply_balance_btn, 4, 0, 1, 3)
 
         balance_hint = QLabel(
-            "Praktisch, wenn du gerade erst anfängst, für etwas zu sparen, "
-            "einen Notgroschen aufzubauen oder in ETFs zu investieren: so "
-            "zählt dein tatsächlich vorhandenes Geld, nicht nur das, was du "
-            "seit Nutzung von Plutos gebucht hast."
+            tr('Praktisch, wenn du gerade erst anfängst, für etwas zu sparen, einen Notgroschen aufzubauen oder in ETFs zu investieren: so zählt dein tatsächlich vorhandenes Geld, nicht nur das, was du seit Nutzung von Plutos gebucht hast.')
         )
         balance_hint.setWordWrap(True)
-        balance_grid.addWidget(balance_hint, 5, 0, 1, 3)
+        balance_grid.addWidget(balance_hint, 6, 0, 1, 3)
 
         # -- Abschnitt A: Notgroschen --
-        ng_group = QGroupBox("Notgroschen einrichten (3–6 Monate Fixkosten)")
+        ng_group = QGroupBox(tr('Notgroschen einrichten (3–6 Monate Fixkosten)'))
         layout.addWidget(ng_group)
         ng_grid = QGridLayout(ng_group)
 
-        ng_grid.addWidget(QLabel("Monatliche Fixkosten (€):"), 0, 0)
+        ng_grid.addWidget(QLabel(tr('Monatliche Fixkosten (€):')), 0, 0)
         self.planning_fixed_costs_spin = QDoubleSpinBox()
         self.planning_fixed_costs_spin.setRange(0, 100_000)
         self.planning_fixed_costs_spin.setDecimals(2)
         self.planning_fixed_costs_spin.setValue(self.store.estimate_monthly_fixed_costs())
         self.planning_fixed_costs_spin.valueChanged.connect(self._update_notgroschen_preview)
         ng_grid.addWidget(self.planning_fixed_costs_spin, 0, 1)
-        recalc_btn = QPushButton("Aus wiederkehrenden Ausgaben schätzen")
+        recalc_btn = QPushButton(tr('Aus wiederkehrenden Ausgaben schätzen'))
         recalc_btn.clicked.connect(self._on_recalc_fixed_costs)
         ng_grid.addWidget(recalc_btn, 0, 2)
 
-        ng_grid.addWidget(QLabel("Ziel: Monate an Fixkosten:"), 1, 0)
+        ng_grid.addWidget(QLabel(tr('Ziel: Monate an Fixkosten:')), 1, 0)
         self.planning_months_spin = QSpinBox()
         self.planning_months_spin.setRange(1, 12)
         self.planning_months_spin.setValue(4)
         self.planning_months_spin.valueChanged.connect(self._update_notgroschen_preview)
         ng_grid.addWidget(self.planning_months_spin, 1, 1)
         ng_grid.addWidget(make_help_button(
-            "Wie viele Monate an Fixkosten der Notgroschen abdecken soll – "
-            "eine Reserve für unerwartete Ausgaben oder Einkommensausfälle "
-            "(z. B. Jobverlust, Reparaturen). 3 Monate gelten als absolutes "
-            "Minimum, 6 Monate als komfortabel; bei unsicherem Einkommen "
-            "(Selbstständigkeit) eher mehr."
+            tr('Wie viele Monate an Fixkosten der Notgroschen abdecken soll – eine Reserve für unerwartete Ausgaben oder Einkommensausfälle (z. B. Jobverlust, Reparaturen). 3 Monate gelten als absolutes Minimum, 6 Monate als komfortabel; bei unsicherem Einkommen (Selbstständigkeit) eher mehr.')
         ), 1, 2)
 
         fixed_hint = QLabel(
-            "Vorbelegt aus deinen laufenden wiederkehrenden Ausgaben-Vorlagen "
-            "(Miete, Versicherungen, …). Frei anpassbar, falls nicht alle "
-            "Fixkosten als wiederkehrende Buchung erfasst sind."
+            tr('Vorbelegt aus deinen laufenden wiederkehrenden Ausgaben-Vorlagen (Miete, Versicherungen, …). Frei anpassbar, falls nicht alle Fixkosten als wiederkehrende Buchung erfasst sind.')
         )
         fixed_hint.setWordWrap(True)
         ng_grid.addWidget(fixed_hint, 2, 0, 1, 3)
@@ -795,80 +885,70 @@ class MainWindow(QMainWindow):
         self.notgroschen_preview_label.setWordWrap(True)
         ng_grid.addWidget(self.notgroschen_preview_label, 3, 0, 1, 3)
 
-        ng_create_btn = QPushButton("Notgroschen-Ziel anlegen/aktualisieren")
+        ng_create_btn = QPushButton(tr('Notgroschen-Ziel anlegen/aktualisieren'))
         ng_create_btn.clicked.connect(self._on_create_or_update_notgroschen)
         ng_grid.addWidget(ng_create_btn, 4, 0, 1, 3)
 
         # -- Abschnitt B: Anlage-Empfehlung --
-        rec_group = QGroupBox("Anlage-Empfehlung (einfache Faustregel)")
+        rec_group = QGroupBox(tr('Anlage-Empfehlung (einfache Faustregel)'))
         layout.addWidget(rec_group)
         rec_grid = QGridLayout(rec_group)
 
-        rec_grid.addWidget(QLabel("Netto-Einkommen (monatlich, €):"), 0, 0)
+        rec_grid.addWidget(QLabel(tr('Netto-Einkommen (monatlich, €):')), 0, 0)
         self.planning_income_spin = QDoubleSpinBox()
         self.planning_income_spin.setRange(0, 1_000_000)
         self.planning_income_spin.setDecimals(2)
         self.planning_income_spin.setValue(2500)
         rec_grid.addWidget(self.planning_income_spin, 0, 1)
 
-        rec_grid.addWidget(QLabel("Startkapital (€):"), 1, 0)
+        rec_grid.addWidget(QLabel(tr('Startkapital (€):')), 1, 0)
         self.planning_capital_spin = QDoubleSpinBox()
         self.planning_capital_spin.setRange(0, 10_000_000)
         self.planning_capital_spin.setDecimals(2)
         rec_grid.addWidget(self.planning_capital_spin, 1, 1)
 
-        rec_grid.addWidget(QLabel("Freizeit-/Pufferbudget (% vom Netto):"), 2, 0)
+        rec_grid.addWidget(QLabel(tr('Freizeit-/Pufferbudget (% vom Netto):')), 2, 0)
         self.planning_leisure_percent_spin = QDoubleSpinBox()
         self.planning_leisure_percent_spin.setRange(0, 50)
         self.planning_leisure_percent_spin.setValue(10)
         rec_grid.addWidget(self.planning_leisure_percent_spin, 2, 1)
         rec_grid.addWidget(make_help_button(
-            "Anteil des Netto-Einkommens, der für Freizeit, Hobbys oder als "
-            "spontaner finanzieller Puffer reserviert bleibt, statt komplett "
-            "auf Notgroschen/Sparziele/ETF verteilt zu werden. Rein "
-            "informativ – wird nirgends automatisch als Buchung angelegt."
+            tr('Anteil des Netto-Einkommens, der für Freizeit, Hobbys oder als spontaner finanzieller Puffer reserviert bleibt, statt komplett auf Notgroschen/Sparziele/ETF verteilt zu werden. Rein informativ – wird nirgends automatisch als Buchung angelegt.')
         ), 2, 2)
 
         self.planning_include_goals_check = QCheckBox(
-            "Weitere Sparziele einbeziehen (Priorität siehe Sparziele-Tab)")
+            tr('Weitere Sparziele einbeziehen (Priorität siehe Sparziele-Tab)'))
         self.planning_include_goals_check.setChecked(True)
         rec_grid.addWidget(self.planning_include_goals_check, 3, 0, 1, 3)
 
         self.planning_risk_check = QCheckBox(
-            "Risikoprofil/Anlagehorizont für den ETF-Anteil berücksichtigen (optional)")
+            tr('Risikoprofil/Anlagehorizont für den ETF-Anteil berücksichtigen (optional)'))
         self.planning_risk_check.toggled.connect(self._on_risk_toggle_changed)
         rec_grid.addWidget(self.planning_risk_check, 4, 0, 1, 3)
 
-        rec_grid.addWidget(QLabel("Anlagehorizont (Jahre):"), 5, 0)
+        rec_grid.addWidget(QLabel(tr('Anlagehorizont (Jahre):')), 5, 0)
         self.planning_horizon_spin = QSpinBox()
         self.planning_horizon_spin.setRange(0, 60)
         self.planning_horizon_spin.setValue(10)
         self.planning_horizon_spin.setEnabled(False)
         rec_grid.addWidget(self.planning_horizon_spin, 5, 1)
         rec_grid.addWidget(make_help_button(
-            "Wie viele Jahre das Geld voraussichtlich investiert bleibt, "
-            "bevor es gebraucht wird. Kurzer Horizont = höheres Risiko, "
-            "dass ein Kurseinbruch sich nicht mehr erholt, bevor das Geld "
-            "gebraucht wird – daher bei kurzem Horizont ein kleinerer "
-            "ETF-Anteil."
+            tr('Wie viele Jahre das Geld voraussichtlich investiert bleibt, bevor es gebraucht wird. Kurzer Horizont = höheres Risiko, dass ein Kurseinbruch sich nicht mehr erholt, bevor das Geld gebraucht wird – daher bei kurzem Horizont ein kleinerer ETF-Anteil.')
         ), 5, 2)
 
-        rec_grid.addWidget(QLabel("Risikoprofil:"), 6, 0)
+        rec_grid.addWidget(QLabel(tr('Risikoprofil:')), 6, 0)
         self.planning_risk_combo = QComboBox()
-        self.planning_risk_combo.addItem("Konservativ", "konservativ")
-        self.planning_risk_combo.addItem("Ausgewogen", "ausgewogen")
-        self.planning_risk_combo.addItem("Offensiv", "offensiv")
+        self.planning_risk_combo.addItem(tr('Konservativ'), "konservativ")
+        self.planning_risk_combo.addItem(tr('Ausgewogen'), "ausgewogen")
+        self.planning_risk_combo.addItem(tr('Offensiv'), "offensiv")
         self.planning_risk_combo.setCurrentIndex(1)
         self.planning_risk_combo.setEnabled(False)
         rec_grid.addWidget(self.planning_risk_combo, 6, 1)
         rec_grid.addWidget(make_help_button(
-            "Wie viel Wertschwankung (und damit Verlustrisiko) du bereit "
-            "bist einzugehen, um langfristig höhere Renditechancen zu "
-            "haben. Konservativ = mehr Sicherheitsreserve, weniger "
-            "ETF-Anteil; offensiv = mehr ETF-Anteil, mehr Schwankung."
+            tr('Wie viel Wertschwankung (und damit Verlustrisiko) du bereit bist einzugehen, um langfristig höhere Renditechancen zu haben. Konservativ = mehr Sicherheitsreserve, weniger ETF-Anteil; offensiv = mehr ETF-Anteil, mehr Schwankung.')
         ), 6, 2)
 
-        calc_rec_btn = QPushButton("Empfehlung berechnen")
+        calc_rec_btn = QPushButton(tr('Empfehlung berechnen'))
         calc_rec_btn.clicked.connect(self._on_calculate_recommendation)
         rec_grid.addWidget(calc_rec_btn, 7, 0, 1, 3)
 
@@ -878,40 +958,27 @@ class MainWindow(QMainWindow):
 
         action_box = QHBoxLayout()
         rec_grid.addLayout(action_box, 9, 0, 1, 3)
-        apply_etf_btn = QPushButton("Monatliche ETF-Rate übernehmen")
+        apply_etf_btn = QPushButton(tr('Monatliche ETF-Rate übernehmen'))
         apply_etf_btn.clicked.connect(self._on_apply_recommendation_to_etf)
         action_box.addWidget(apply_etf_btn)
-        apply_capital_btn = QPushButton("Startkapital-Anteile als Fortschritt vormerken")
+        apply_capital_btn = QPushButton(tr('Startkapital-Anteile als Fortschritt vormerken'))
         apply_capital_btn.clicked.connect(self._on_apply_capital_to_goals)
         action_box.addWidget(apply_capital_btn)
         action_box.addStretch()
 
         self.apply_capital_as_transaction_check = QCheckBox(
-            "Dabei auch als Buchung verbuchen (Kontostand sinkt entsprechend)")
+            tr('Dabei auch als Buchung verbuchen (Kontostand sinkt entsprechend)'))
         self.apply_capital_as_transaction_check.setChecked(True)
         rec_grid.addWidget(self.apply_capital_as_transaction_check, 10, 0, 1, 3)
 
         capital_hint = QLabel(
-            "Wichtig: Ohne diese Buchung bleibt dein Kontostand oben "
-            "unverändert, obwohl die Sparziele-Fortschritte steigen – "
-            "dasselbe Geld würde dir beim nächsten Mal fälschlich erneut "
-            "als Startkapital angeboten. Häkchen nur entfernen, wenn das "
-            "eingegebene Startkapital NICHT aus deinem hinterlegten "
-            "Kontostand stammt (z. B. separates Erbe/Depot, das dort nicht "
-            "mitgezählt wird)."
+            tr('Wichtig: Ohne diese Buchung bleibt dein Kontostand oben unverändert, obwohl die Sparziele-Fortschritte steigen – dasselbe Geld würde dir beim nächsten Mal fälschlich erneut als Startkapital angeboten. Häkchen nur entfernen, wenn das eingegebene Startkapital NICHT aus deinem hinterlegten Kontostand stammt (z. B. separates Erbe/Depot, das dort nicht mitgezählt wird).')
         )
         capital_hint.setWordWrap(True)
         rec_grid.addWidget(capital_hint, 11, 0, 1, 3)
 
         disclaimer = QLabel(
-            "Diese Aufteilung folgt der gängigen Faustregel „Notgroschen "
-            "(und ggf. weitere Ziele) vor Investieren“ sowie einer einfachen "
-            "Horizont-/Risiko-Faustregel für den ETF-Anteil. Beides sind "
-            "transparente Modellrechnungen – KEINE individuelle "
-            "Finanzberatung. Sie berücksichtigen weder Schulden noch "
-            "Steuern noch deine tatsächliche persönliche Risikotragfähigkeit. "
-            "Alle Werte lassen sich frei anpassen; für eine verbindliche "
-            "Einschätzung wende dich an eine unabhängige Finanzberatung."
+            tr('Diese Aufteilung folgt der gängigen Faustregel „Notgroschen (und ggf. weitere Ziele) vor Investieren“ sowie einer einfachen Horizont-/Risiko-Faustregel für den ETF-Anteil. Beides sind transparente Modellrechnungen – KEINE individuelle Finanzberatung. Sie berücksichtigen weder Schulden noch Steuern noch deine tatsächliche persönliche Risikotragfähigkeit. Alle Werte lassen sich frei anpassen; für eine verbindliche Einschätzung wende dich an eine unabhängige Finanzberatung.')
         )
         disclaimer.setWordWrap(True)
         small_font = disclaimer.font()
@@ -935,13 +1002,18 @@ class MainWindow(QMainWindow):
         balance = self.store.get_current_account_balance()
         if balance is None:
             self.current_balance_label.setText(
-                "Noch kein Kontostand hinterlegt – oben Stichtag und Betrag "
-                "eintragen und speichern."
+                tr('Noch kein Kontostand hinterlegt – oben Stichtag und Betrag eintragen und speichern.')
             )
         else:
-            self.current_balance_label.setText(
-                f"Aktueller Kontostand (berechnet): {fmt_amount(balance)}"
-            )
+            text = tr('Aktueller Kontostand (berechnet): {0}').format(fmt_amount(balance))
+            bd = self.store.get_balance_breakdown()
+            if bd and self.store.notgroschen_pocket_enabled():
+                text = (tr('Girokonto: {0}\nNotgroschen-Unterkonto: {1}\nGesamt: {2}').format(fmt_amount(bd['giro']), fmt_amount(bd['pocket']), fmt_amount(bd['total'])))
+            self.current_balance_label.setText(text)
+
+    def _on_toggle_pocket(self, checked):
+        self.store.set_notgroschen_pocket(checked)
+        self._refresh_current_balance_display()
 
     def _on_apply_balance_to_recommendation(self):
         balance = self.store.get_current_account_balance()
@@ -959,12 +1031,11 @@ class MainWindow(QMainWindow):
         target = fixed * months
         existing = self.store.get_goal_by_name("Notgroschen")
         if existing:
-            status = (f"Bestehendes Sparziel „Notgroschen“: {fmt_amount(existing['current_amount'])} "
-                      f"von aktuell {fmt_amount(existing['target_amount'])} angespart.")
+            status = (tr('Bestehendes Sparziel „Notgroschen“: {0} von aktuell {1} angespart.').format(fmt_amount(existing['current_amount']), fmt_amount(existing['target_amount'])))
         else:
-            status = "Noch kein Sparziel „Notgroschen“ angelegt."
+            status = tr('Noch kein Sparziel „Notgroschen“ angelegt.')
         self.notgroschen_preview_label.setText(
-            f"Zielbetrag bei {months} Monaten Fixkosten: {fmt_amount(target)}\n{status}"
+            tr('Zielbetrag bei {0} Monaten Fixkosten: {1}\n{2}').format(months, fmt_amount(target), status)
         )
 
     def _on_create_or_update_notgroschen(self):
@@ -1033,46 +1104,35 @@ class MainWindow(QMainWindow):
         self._current_recommendation = rec
 
         lines = [
-            f"Monatlich verfügbar (Netto abzüglich Fixkosten von {fmt_amount(fixed)} und "
-            f"Freizeitbudget von {fmt_amount(leisure)}): {fmt_amount(rec['monthly_available'])}",
-            f"Startkapital: {fmt_amount(capital)}",
+            tr('Monatlich verfügbar (Netto abzüglich Fixkosten von {0} und Freizeitbudget von {1}): {2}').format(fmt_amount(fixed), fmt_amount(leisure), fmt_amount(rec['monthly_available'])),
+            tr('Startkapital: {0}').format(fmt_amount(capital)),
             "",
         ]
         for g in rec["goals"]:
             if g["fully_funded"]:
-                status = "bereits voll gedeckt" if g["gap_before"] <= 0 else "wird damit voll gedeckt"
+                status = tr("bereits voll gedeckt") if g["gap_before"] <= 0 else tr('wird damit voll gedeckt')
             else:
-                eta = (f", ca. {g['months_to_fill']} Monate bei diesem Tempo"
-                       if g["months_to_fill"] else ", reicht mit aktuellem Tempo noch nicht")
-                status = f"Lücke bleibt: {fmt_amount(g['remaining_gap'])}{eta}"
+                eta = (tr(', ca. {0} Monate bei diesem Tempo').format(g['months_to_fill'])
+                       if g["months_to_fill"] else tr(', reicht mit aktuellem Tempo noch nicht'))
+                status = tr('Lücke bleibt: {0}{1}').format(fmt_amount(g['remaining_gap']), eta)
             lines.append(
-                f"• {g['name']} (Ziel: {fmt_amount(g['target_amount'])}, "
-                f"bereits {fmt_amount(g['current_amount'])} vorhanden): "
-                f"{fmt_amount(g['capital_allocated'])} aus Startkapital, "
-                f"{fmt_amount(g['monthly_allocated'])}/Monat – {status}"
+                tr('• {0} (Ziel: {1}, bereits {2} vorhanden): {3} aus Startkapital, {4}/Monat – {5}').format(g['name'], fmt_amount(g['target_amount']), fmt_amount(g['current_amount']), fmt_amount(g['capital_allocated']), fmt_amount(g['monthly_allocated']), status)
             )
 
         lines.append("")
         if rec["risk_applied"]:
             lines.append(
-                f"Rest zum Investieren – bei {int(self.planning_horizon_spin.value())} Jahren "
-                f"Horizont, Profil „{self.planning_risk_combo.currentText()}“: empfohlener "
-                f"ETF-Anteil {rec['equity_share_percent']}%, Rest als Sicherheitsreserve:"
+                tr('Rest zum Investieren – bei {0} Jahren Horizont, Profil „{1}“: empfohlener ETF-Anteil {2}%, Rest als Sicherheitsreserve:').format(int(self.planning_horizon_spin.value()), self.planning_risk_combo.currentText(), rec['equity_share_percent'])
             )
             lines.append(
-                f"  → ETF-Sparplan: {fmt_amount(rec['monthly_to_equity'])}/Monat, "
-                f"{fmt_amount(rec['capital_to_equity'])} Startkapital"
+                tr('  → ETF-Sparplan: {0}/Monat, {1} Startkapital').format(fmt_amount(rec['monthly_to_equity']), fmt_amount(rec['capital_to_equity']))
             )
             lines.append(
-                f"  → Sicherheitsreserve (z. B. Tagesgeld): "
-                f"{fmt_amount(rec['monthly_to_safety'])}/Monat, "
-                f"{fmt_amount(rec['capital_to_safety'])} Startkapital"
+                tr('  → Sicherheitsreserve (z. B. Tagesgeld): {0}/Monat, {1} Startkapital').format(fmt_amount(rec['monthly_to_safety']), fmt_amount(rec['capital_to_safety']))
             )
         else:
             lines.append(
-                f"Rest zum Investieren (z. B. ETF-Sparplan): "
-                f"{fmt_amount(rec['monthly_to_etf'])}/Monat, "
-                f"{fmt_amount(rec['capital_to_etf'])} Startkapital"
+                tr('Rest zum Investieren (z. B. ETF-Sparplan): {0}/Monat, {1} Startkapital').format(fmt_amount(rec['monthly_to_etf']), fmt_amount(rec['capital_to_etf']))
             )
 
         self.recommendation_label.setText("\n".join(lines))
@@ -1127,119 +1187,104 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(container)
         outer.setWidget(container)
 
-        form_group = QGroupBox("Sparplan")
+        form_group = QGroupBox(tr('Sparplan'))
         layout.addWidget(form_group)
         form = QGridLayout(form_group)
 
-        form.addWidget(QLabel("Name:"), 0, 0)
+        form.addWidget(QLabel(tr('Name:')), 0, 0)
         self.etf_name_edit = QLineEdit("Mein ETF-Sparplan")
         form.addWidget(self.etf_name_edit, 0, 1)
 
-        form.addWidget(QLabel("Monatliche Rate (€):"), 1, 0)
+        form.addWidget(QLabel(tr('Monatliche Rate (€):')), 1, 0)
         self.etf_amount_spin = QDoubleSpinBox()
         self.etf_amount_spin.setRange(1, 100_000)
         self.etf_amount_spin.setDecimals(2)
         self.etf_amount_spin.setValue(100)
         form.addWidget(self.etf_amount_spin, 1, 1)
 
-        form.addWidget(QLabel("Erwartete jährl. Rendite (%):"), 2, 0)
+        form.addWidget(QLabel(tr('Erwartete jährl. Rendite (%):')), 2, 0)
         self.etf_return_spin = QDoubleSpinBox()
         self.etf_return_spin.setRange(-20, 30)
         self.etf_return_spin.setValue(6.0)
         form.addWidget(self.etf_return_spin, 2, 1)
 
-        form.addWidget(QLabel("Laufzeit (Jahre):"), 3, 0)
+        form.addWidget(QLabel(tr('Laufzeit (Jahre):')), 3, 0)
         self.etf_years_spin = QSpinBox()
         self.etf_years_spin.setRange(1, 60)
         self.etf_years_spin.setValue(10)
         form.addWidget(self.etf_years_spin, 3, 1)
 
-        form.addWidget(QLabel("Jährliche Erhöhung der Sparrate (%):"), 4, 0)
+        form.addWidget(QLabel(tr('Jährliche Erhöhung der Sparrate (%):')), 4, 0)
         self.etf_increase_spin = QDoubleSpinBox()
         self.etf_increase_spin.setRange(0, 50)
         form.addWidget(self.etf_increase_spin, 4, 1)
         form.addWidget(make_help_button(
-            "Erhöht die monatliche Sparrate jedes Jahr um diesen "
-            "Prozentsatz, z. B. um eine erwartete Gehaltssteigerung "
-            "nachzubilden. 0 % = die Sparrate bleibt über die gesamte "
-            "Laufzeit konstant."
+            tr('Erhöht die monatliche Sparrate jedes Jahr um diesen Prozentsatz, z. B. um eine erwartete Gehaltssteigerung nachzubilden. 0 % = die Sparrate bleibt über die gesamte Laufzeit konstant.')
         ), 4, 2)
 
-        form.addWidget(QLabel("Maximale Sparrate (€, 0 = kein Deckel):"), 5, 0)
+        form.addWidget(QLabel(tr('Maximale Sparrate (€, 0 = kein Deckel):')), 5, 0)
         self.etf_cap_spin = QDoubleSpinBox()
         self.etf_cap_spin.setRange(0, 100_000)
         form.addWidget(self.etf_cap_spin, 5, 1)
         form.addWidget(make_help_button(
-            "Obergrenze für die Sparrate, falls sie sich durch die "
-            "jährliche Erhöhung sonst unbegrenzt weiter steigern würde. "
-            "0 bedeutet: kein Deckel, die Rate wächst ungebremst weiter."
+            tr('Obergrenze für die Sparrate, falls sie sich durch die jährliche Erhöhung sonst unbegrenzt weiter steigern würde. 0 bedeutet: kein Deckel, die Rate wächst ungebremst weiter.')
         ), 5, 2)
 
         # -- Steuer-Einstellungen --
-        tax_group = QGroupBox("Deutsche Kapitalertragsteuer (vereinfacht, anpassbar)")
+        tax_group = QGroupBox(tr('Deutsche Kapitalertragsteuer (vereinfacht, anpassbar)'))
         layout.addWidget(tax_group)
         tax_grid = QGridLayout(tax_group)
 
         self.etf_vorab_check = QCheckBox(
-            "Jährliche Vorabpauschale simulieren (statt Einmalbesteuerung am Laufzeitende)")
+            tr('Jährliche Vorabpauschale simulieren (statt Einmalbesteuerung am Laufzeitende)'))
         self.etf_vorab_check.toggled.connect(self._on_vorab_toggled)
         tax_grid.addWidget(self.etf_vorab_check, 0, 0, 1, 3)
 
-        tax_grid.addWidget(QLabel("Basiszins (%, jährlich vom BMF festgelegt):"), 1, 0)
+        tax_grid.addWidget(QLabel(tr('Basiszins (%, jährlich vom BMF festgelegt):')), 1, 0)
         self.etf_basiszins_spin = QDoubleSpinBox()
         self.etf_basiszins_spin.setRange(0, 15)
         self.etf_basiszins_spin.setValue(2.55)
         self.etf_basiszins_spin.setEnabled(False)
         tax_grid.addWidget(self.etf_basiszins_spin, 1, 1)
         tax_grid.addWidget(make_help_button(
-            "Zinssatz, den das Bundesfinanzministerium jährlich für die "
-            "Vorabpauschale-Berechnung festlegt (orientiert sich an "
-            "langfristigen Bundesanleihen). Ändert sich jährlich – der "
-            "voreingestellte Wert ist nur ein Richtwert."
+            tr('Zinssatz, den das Bundesfinanzministerium jährlich für die Vorabpauschale-Berechnung festlegt (orientiert sich an langfristigen Bundesanleihen). Ändert sich jährlich – der voreingestellte Wert ist nur ein Richtwert.')
         ), 1, 2)
 
-        tax_grid.addWidget(QLabel("Teilfreistellung (%):"), 2, 0)
+        tax_grid.addWidget(QLabel(tr('Teilfreistellung (%):')), 2, 0)
         self.etf_teilfreistellung_spin = QDoubleSpinBox()
         self.etf_teilfreistellung_spin.setRange(0, 60)
         self.etf_teilfreistellung_spin.setValue(30)
         tax_grid.addWidget(self.etf_teilfreistellung_spin, 2, 1)
         tax_grid.addWidget(make_help_button(
-            "Anteil des Fondsgewinns, der steuerfrei bleibt (§20 InvStG). "
-            "30 % ist der übliche Satz für Aktienfonds-ETFs mit mindestens "
-            "51 % Aktienquote. Bei Anleihen-ETFs 0 %, bei Mischfonds meist "
-            "15 %, bei Immobilienfonds 60–80 %."
+            tr('Anteil des Fondsgewinns, der steuerfrei bleibt (§20 InvStG). 30 % ist der übliche Satz für Aktienfonds-ETFs mit mindestens 51 % Aktienquote. Bei Anleihen-ETFs 0 %, bei Mischfonds meist 15 %, bei Immobilienfonds 60–80 %.')
         ), 2, 2)
 
-        tax_grid.addWidget(QLabel("Kapitalertragsteuer (%):"), 3, 0)
+        tax_grid.addWidget(QLabel(tr('Kapitalertragsteuer (%):')), 3, 0)
         self.etf_kest_spin = QDoubleSpinBox()
         self.etf_kest_spin.setRange(0, 50)
         self.etf_kest_spin.setValue(25)
         tax_grid.addWidget(self.etf_kest_spin, 3, 1)
         tax_grid.addWidget(make_help_button(
-            "Die pauschale Abgeltungsteuer auf Kapitalerträge in "
-            "Deutschland, gesetzlich 25 %."
+            tr('Die pauschale Abgeltungsteuer auf Kapitalerträge in Deutschland, gesetzlich 25 %.')
         ), 3, 2)
 
-        tax_grid.addWidget(QLabel("Solidaritätszuschlag (%):"), 4, 0)
+        tax_grid.addWidget(QLabel(tr('Solidaritätszuschlag (%):')), 4, 0)
         self.etf_soli_spin = QDoubleSpinBox()
         self.etf_soli_spin.setRange(0, 20)
         self.etf_soli_spin.setValue(5.5)
         tax_grid.addWidget(self.etf_soli_spin, 4, 1)
         tax_grid.addWidget(make_help_button(
-            "Zuschlag von 5,5 % auf die Kapitalertragsteuer (nicht auf den "
-            "Gewinn selbst) – gesetzlich vorgegeben."
+            tr('Zuschlag von 5,5 % auf die Kapitalertragsteuer (nicht auf den Gewinn selbst) – gesetzlich vorgegeben.')
         ), 4, 2)
 
-        tax_grid.addWidget(QLabel("Sparerpauschbetrag (€/Jahr):"), 5, 0)
+        tax_grid.addWidget(QLabel(tr('Sparerpauschbetrag (€/Jahr):')), 5, 0)
         self.etf_pauschbetrag_spin = QDoubleSpinBox()
         self.etf_pauschbetrag_spin.setRange(0, 5000)
         self.etf_pauschbetrag_spin.setDecimals(0)
         self.etf_pauschbetrag_spin.setValue(1000)
         tax_grid.addWidget(self.etf_pauschbetrag_spin, 5, 1)
         tax_grid.addWidget(make_help_button(
-            "Steuerfreibetrag auf Kapitalerträge: 1.000 € pro Jahr bei "
-            "Einzelveranlagung, 2.000 € bei Zusammenveranlagung (Ehepaare, "
-            "Stand 2023)."
+            tr('Steuerfreibetrag auf Kapitalerträge: 1.000 € pro Jahr bei Einzelveranlagung, 2.000 € bei Zusammenveranlagung (Ehepaare, Stand 2023).')
         ), 5, 2)
 
         self.etf_tax_hint = QLabel()
@@ -1247,7 +1292,7 @@ class MainWindow(QMainWindow):
         self._update_tax_hint()
         tax_grid.addWidget(self.etf_tax_hint, 6, 0, 1, 3)
 
-        calc_btn = QPushButton("Berechnen & Speichern")
+        calc_btn = QPushButton(tr('Berechnen & Speichern'))
         calc_btn.clicked.connect(self._on_calculate_etf)
         layout.addWidget(calc_btn)
 
@@ -1255,47 +1300,105 @@ class MainWindow(QMainWindow):
         self.etf_summary_label.setWordWrap(True)
         layout.addWidget(self.etf_summary_label)
 
+        scen_box = QHBoxLayout()
+        layout.addLayout(scen_box)
+        scen_box.addWidget(QLabel(tr('<b>Szenarien</b> – Rendite ±')))
+        self.etf_spread_spin = QDoubleSpinBox()
+        self.etf_spread_spin.setRange(0, 20)
+        self.etf_spread_spin.setDecimals(1)
+        self.etf_spread_spin.setValue(2.0)
+        self.etf_spread_spin.setSuffix(tr(' Prozentpunkte'))
+        self.etf_spread_spin.valueChanged.connect(self._refresh_etf_scenarios)
+        scen_box.addWidget(self.etf_spread_spin)
+        scen_box.addWidget(QLabel(tr('Inflation:')))
+        self.etf_inflation_spin = QDoubleSpinBox()
+        self.etf_inflation_spin.setRange(0, 15)
+        self.etf_inflation_spin.setDecimals(1)
+        self.etf_inflation_spin.setValue(2.0)
+        self.etf_inflation_spin.setSuffix(tr(' % p.a.'))
+        self.etf_inflation_spin.valueChanged.connect(self._refresh_etf_scenarios)
+        scen_box.addWidget(self.etf_inflation_spin)
+        scen_box.addWidget(make_help_button(
+            tr('Zeigt, wie stark das Ergebnis streuen kann, wenn die Rendite besser oder schlechter ausfällt als angenommen. „Kaufkraftbereinigt“ zieht die Inflation ab und gibt den Endwert nach Steuern in heutiger Kaufkraft an. Das sind Rechenbeispiele, keine Prognose und keine Anlageempfehlung.')))
+        scen_box.addStretch()
+
+        self.etf_scenario_table = QTableWidget(3, 5)
+        self.etf_scenario_table.setHorizontalHeaderLabels(
+            [tr('Szenario'), tr('Rendite p.a.'), tr('Endwert vor Steuern'), tr('Endwert nach Steuern'),
+             tr('nach Steuern, heutige Kaufkraft')])
+        self.etf_scenario_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.etf_scenario_table.verticalHeader().setVisible(False)
+        self.etf_scenario_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.etf_scenario_table.setMaximumHeight(120)
+        layout.addWidget(self.etf_scenario_table)
+
         self.etf_result_table = QTableWidget(0, 5)
         self.etf_result_table.setHorizontalHeaderLabels(
-            ["Jahr", "Sparrate", "Eingezahlt", "Wert", "Gewinn"])
+            [tr('Jahr'), tr('Sparrate'), tr('Eingezahlt'), tr('Wert'), tr('Gewinn')])
         self.etf_result_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.etf_result_table.setMaximumHeight(220)
         layout.addWidget(self.etf_result_table)
 
         plan_manage_box = QHBoxLayout()
         layout.addLayout(plan_manage_box)
-        plan_manage_box.addWidget(QLabel("Gespeicherter Plan:"))
+        plan_manage_box.addWidget(QLabel(tr('Gespeicherter Plan:')))
         self.etf_saved_plans_combo = QComboBox()
         plan_manage_box.addWidget(self.etf_saved_plans_combo, 1)
-        del_btn = QPushButton("Löschen")
+        del_btn = QPushButton(tr('Löschen'))
         del_btn.clicked.connect(self._on_delete_etf_plan)
         plan_manage_box.addWidget(del_btn)
 
-        layout.addWidget(QLabel("Vergleich gespeicherter Sparpläne (Wertentwicklung, vor Steuern):"))
+        layout.addWidget(QLabel(tr('Vergleich gespeicherter Sparpläne (Wertentwicklung, vor Steuern):')))
         self.etf_compare_widget = EtfComparisonWidget()
         layout.addWidget(self.etf_compare_widget)
 
         self._refresh_etf_plan_selector()
         self._refresh_etf_comparison()
+        for spin in (self.etf_amount_spin, self.etf_return_spin, self.etf_years_spin,
+                     self.etf_increase_spin, self.etf_cap_spin, self.etf_basiszins_spin,
+                     self.etf_teilfreistellung_spin, self.etf_kest_spin, self.etf_soli_spin,
+                     self.etf_pauschbetrag_spin):
+            spin.valueChanged.connect(self._refresh_etf_scenarios)
+        self._refresh_etf_scenarios()
         return outer
+
+    def _refresh_etf_scenarios(self, *_args):
+        if not hasattr(self, "etf_scenario_table"):
+            return
+        cap = self.etf_cap_spin.value()
+        scenarios = FinanceStore.etf_scenarios(
+            self.etf_amount_spin.value(), self.etf_return_spin.value(),
+            self.etf_years_spin.value(),
+            annual_increase_percent=self.etf_increase_spin.value(),
+            max_monthly_amount=cap if cap > 0 else None,
+            spread_percent=self.etf_spread_spin.value(),
+            inflation_percent=self.etf_inflation_spin.value(),
+            use_vorabpauschale=self.etf_vorab_check.isChecked(),
+            basiszins_percent=self.etf_basiszins_spin.value(),
+            teilfreistellung_percent=self.etf_teilfreistellung_spin.value(),
+            kapitalertragsteuer_percent=self.etf_kest_spin.value(),
+            soli_percent=self.etf_soli_spin.value(),
+            sparerpauschbetrag=self.etf_pauschbetrag_spin.value(),
+        )
+        for row, sc in enumerate(scenarios):
+            values = [sc["label"], f"{sc['annual_return']:.2f} %", fmt_amount(sc["value"]),
+                      fmt_amount(sc["value_after_tax"]), fmt_amount(sc["real_value_after_tax"])]
+            for col, text in enumerate(values):
+                item = QTableWidgetItem(text)
+                if col:
+                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self.etf_scenario_table.setItem(row, col, item)
 
     def _on_vorab_toggled(self, active):
         self.etf_basiszins_spin.setEnabled(active)
         self._update_tax_hint()
+        self._refresh_etf_scenarios()
 
     def _update_tax_hint(self):
         if self.etf_vorab_check.isChecked():
-            text = ("Hinweis: Simuliert die jährliche Vorabpauschale (Basisertrag = "
-                    "Wert zu Jahresbeginn × Basiszins × 70 %, gedeckelt auf den "
-                    "tatsächlichen Wertzuwachs). Der Sparerpauschbetrag steht dabei "
-                    "JÄHRLICH neu zur Verfügung. Bereits versteuerte Beträge werden "
-                    "bei der Steuer am Laufzeitende angerechnet (keine "
-                    "Doppelbesteuerung). Kirchensteuer bleibt unberücksichtigt.")
+            text = (tr('Hinweis: Simuliert die jährliche Vorabpauschale (Basisertrag = Wert zu Jahresbeginn × Basiszins × 70 %, gedeckelt auf den tatsächlichen Wertzuwachs). Der Sparerpauschbetrag steht dabei JÄHRLICH neu zur Verfügung. Bereits versteuerte Beträge werden bei der Steuer am Laufzeitende angerechnet (keine Doppelbesteuerung). Kirchensteuer bleibt unberücksichtigt.'))
         else:
-            text = ("Hinweis: Vereinfachte Rechnung ohne jährliche Vorabpauschale – "
-                    "Steuer wird pauschal auf den Gesamtgewinn am Laufzeitende "
-                    "angesetzt, mit dem Sparerpauschbetrag nur EINMALIG am Ende. "
-                    "Kirchensteuer bleibt unberücksichtigt.")
+            text = (tr('Hinweis: Vereinfachte Rechnung ohne jährliche Vorabpauschale – Steuer wird pauschal auf den Gesamtgewinn am Laufzeitende angesetzt, mit dem Sparerpauschbetrag nur EINMALIG am Ende. Kirchensteuer bleibt unberücksichtigt.'))
         self.etf_tax_hint.setText(text)
 
     def _on_calculate_etf(self):
@@ -1330,10 +1433,7 @@ class MainWindow(QMainWindow):
             )
             total_vorab_tax_paid = sum(r["tax_paid"] for r in results)
             vorab_note = (
-                f" Während der Laufzeit wurden bereits {fmt_amount(total_vorab_tax_paid)} "
-                f"Steuern auf Vorabpauschalen gezahlt (im Endwert schon berücksichtigt); "
-                f"davon {fmt_amount(cumulative_pretaxed_gain)} Gewinn wurden bei der "
-                f"Steuer am Ende angerechnet."
+                tr(' Während der Laufzeit wurden bereits {0} Steuern auf Vorabpauschalen gezahlt (im Endwert schon berücksichtigt); davon {1} Gewinn wurden bei der Steuer am Ende angerechnet.').format(fmt_amount(total_vorab_tax_paid), fmt_amount(cumulative_pretaxed_gain))
             )
         else:
             results = FinanceStore.project_etf_plan(
@@ -1359,14 +1459,10 @@ class MainWindow(QMainWindow):
         value_after_tax = tax.get("value_after_tax")
         final_tax_amount = tax.get("final_tax", tax.get("tax"))
         self.etf_summary_label.setText(
-            f"Nach {years} Jahren bei {annual_return:.2f}% p.a.: "
-            f"eingezahlt {fmt_amount(final['invested'])}, "
-            f"Endwert vor Abschluss-Steuer {fmt_amount(final['value'])}, "
-            f"Gewinn {fmt_amount(tax['gain'])}.\n"
-            f"Steuer bei (angenommenem) Verkauf: {fmt_amount(final_tax_amount)} "
-            f"→ Endwert nach Steuern ca. {fmt_amount(value_after_tax)}."
-            f"{vorab_note}"
+            tr('Nach {0} Jahren bei {1:.2f}% p.a.: eingezahlt {2}, Endwert vor Abschluss-Steuer {3}, Gewinn {4}.\nSteuer bei (angenommenem) Verkauf: {5} → Endwert nach Steuern ca. {6}.{7}').format(years, annual_return, fmt_amount(final['invested']), fmt_amount(final['value']), fmt_amount(tax['gain']), fmt_amount(final_tax_amount), fmt_amount(value_after_tax), vorab_note)
         )
+
+        self._refresh_etf_scenarios()
 
         self.current_etf_plan_id = self.store.add_etf_plan(
             name, monthly_amount, annual_return, datetime.date.today().isoformat(),
@@ -1379,7 +1475,7 @@ class MainWindow(QMainWindow):
         self.etf_saved_plans_combo.clear()
         plans = self.store.list_etf_plans()
         for plan in plans:
-            label = f"{plan['name']} ({plan['duration_years']} Jahre, {plan['start_date']})"
+            label = tr('{0} ({1} Jahre, {2})').format(plan['name'], plan['duration_years'], plan['start_date'])
             self.etf_saved_plans_combo.addItem(label, plan["id"])
         if plans:
             target_id = self.current_etf_plan_id or plans[-1]["id"]
@@ -1424,11 +1520,13 @@ class MainWindow(QMainWindow):
 
         switcher_box = QHBoxLayout()
         layout.addLayout(switcher_box)
-        switcher_box.addWidget(QLabel("Ansicht:"))
+        switcher_box.addWidget(QLabel(tr('Ansicht:')))
         self.stats_view_combo = QComboBox()
-        self.stats_view_combo.addItem("Ausgaben nach Kategorie (Kreisdiagramm)", "kategorien")
-        self.stats_view_combo.addItem("Einnahmen/Ausgaben-Trend", "trend")
-        self.stats_view_combo.addItem("Geldfluss (Sankey-Diagramm)", "fluss")
+        self.stats_view_combo.addItem(tr('Ausgaben nach Kategorie (Kreisdiagramm)'), "kategorien")
+        self.stats_view_combo.addItem(tr('Einnahmen/Ausgaben-Trend'), "trend")
+        self.stats_view_combo.addItem(tr('Geldfluss (Sankey-Diagramm)'), "fluss")
+        self.stats_view_combo.addItem(tr('Kategorien vergleichen'), "vergleich")
+        self.stats_view_combo.addItem(tr('Jahresübersicht (mit Vorjahr)'), "jahresvergleich")
         self.stats_view_combo.currentIndexChanged.connect(self._on_stats_view_changed)
         switcher_box.addWidget(self.stats_view_combo)
         switcher_box.addStretch()
@@ -1439,6 +1537,8 @@ class MainWindow(QMainWindow):
         self.stats_stack.addWidget(self._build_pie_section())
         self.stats_stack.addWidget(self._build_trend_section())
         self.stats_stack.addWidget(self._build_sankey_section())
+        self.stats_stack.addWidget(self._build_compare_section())
+        self.stats_stack.addWidget(self._build_year_compare_section())
 
         self._refresh_stats()
         return root
@@ -1452,7 +1552,7 @@ class MainWindow(QMainWindow):
 
         nav = QHBoxLayout()
         layout.addLayout(nav)
-        nav.addWidget(QLabel("Ausgaben nach Kategorie –"))
+        nav.addWidget(QLabel(tr('Ausgaben nach Kategorie –')))
         prev_btn = QPushButton("◀")
         prev_btn.clicked.connect(lambda: self._shift_stats_month(-1))
         nav.addWidget(prev_btn)
@@ -1473,15 +1573,15 @@ class MainWindow(QMainWindow):
 
         nav = QHBoxLayout()
         layout.addLayout(nav)
-        nav.addWidget(QLabel("Trend – letzte"))
+        nav.addWidget(QLabel(tr('Trend – letzte')))
         self.trend_months_spin = QSpinBox()
         self.trend_months_spin.setRange(2, 24)
         self.trend_months_spin.setValue(6)
         self.trend_months_spin.valueChanged.connect(self._on_trend_months_changed)
         nav.addWidget(self.trend_months_spin)
-        nav.addWidget(QLabel("Monate (bezogen auf den gewählten Monat)"))
+        nav.addWidget(QLabel(tr('Monate (bezogen auf den gewählten Monat)')))
         nav.addStretch()
-        legend = QLabel("🟩 Einnahmen   🟥 Ausgaben")
+        legend = QLabel(tr('🟩 Einnahmen   🟥 Ausgaben'))
         nav.addWidget(legend)
 
         self.trend_widget = TrendChartWidget()
@@ -1494,7 +1594,7 @@ class MainWindow(QMainWindow):
 
         nav = QHBoxLayout()
         layout.addLayout(nav)
-        nav.addWidget(QLabel("Geldfluss –"))
+        nav.addWidget(QLabel(tr('Geldfluss –')))
         prev_btn = QPushButton("◀")
         prev_btn.clicked.connect(lambda: self._shift_stats_month(-1))
         nav.addWidget(prev_btn)
@@ -1506,18 +1606,7 @@ class MainWindow(QMainWindow):
         nav.addStretch()
 
         hint = QLabel(
-    """
-    <font color="#aeb6c0">
-        <b><font color="#c8ced6">Links - </font></b>
-        Einnahmen nach Kategorie&nbsp;&nbsp;·&nbsp;&nbsp;
-        <b><font color="#c8ced6">Rechts - </font></b>
-        Ausgaben nach Kategorie
-        (<font color="#4caf50"><b>Überschuss</b></font> /
-        <font color="#e05245"><b>Fehlbetrag</b></font>).<br>
-        Die Bänder zeigen die anteilige Verteilung des Geldflusses
-        und keine direkte Zuordnung einzelner Buchungen.
-    </font>
-    """
+    tr('\n    <font color="#aeb6c0">\n        <b><font color="#c8ced6">Links - </font></b>\n        Einnahmen nach Kategorie&nbsp;&nbsp;·&nbsp;&nbsp;\n        <b><font color="#c8ced6">Rechts - </font></b>\n        Ausgaben nach Kategorie\n        (<font color="#4caf50"><b>Überschuss</b></font> /\n        <font color="#e05245"><b>Fehlbetrag</b></font>).<br>\n        Die Bänder zeigen die anteilige Verteilung des Geldflusses\n        und keine direkte Zuordnung einzelner Buchungen.\n    </font>\n    ')
 )
         hint.setWordWrap(True)
         layout.addWidget(hint)
@@ -1525,6 +1614,207 @@ class MainWindow(QMainWindow):
         self.sankey_widget = SankeyWidget()
         layout.addWidget(self.sankey_widget)
         return section
+
+    def _build_compare_section(self):
+        section = QWidget()
+        layout = QVBoxLayout(section)
+
+        nav = QHBoxLayout()
+        layout.addLayout(nav)
+        self.compare_mode_combo = QComboBox()
+        self.compare_mode_combo.addItem(tr('Monat gegen Vormonat'), "monat")
+        self.compare_mode_combo.addItem(tr('Jahresverlauf'), "jahr")
+        self.compare_mode_combo.currentIndexChanged.connect(self._on_compare_mode_changed)
+        nav.addWidget(self.compare_mode_combo)
+        prev_btn = QPushButton("◀")
+        prev_btn.clicked.connect(lambda: self._shift_compare(-1))
+        nav.addWidget(prev_btn)
+        self.compare_label = QLabel()
+        nav.addWidget(self.compare_label)
+        next_btn = QPushButton("▶")
+        next_btn.clicked.connect(lambda: self._shift_compare(1))
+        nav.addWidget(next_btn)
+        nav.addSpacing(16)
+        self.compare_category_label = QLabel(tr('Kategorie:'))
+        nav.addWidget(self.compare_category_label)
+        self.compare_category_combo = QComboBox()
+        self.compare_category_combo.setMinimumWidth(180)
+        self.compare_category_combo.currentIndexChanged.connect(self._on_compare_category_changed)
+        nav.addWidget(self.compare_category_combo)
+        nav.addStretch()
+
+        self.compare_stack = QStackedWidget()
+        self.compare_month_widget = CategoryCompareWidget()
+        self.compare_year_widget = CategoryYearWidget()
+        self.compare_stack.addWidget(self.compare_month_widget)
+        self.compare_stack.addWidget(self.compare_year_widget)
+        layout.addWidget(self.compare_stack)
+
+        self.compare_summary = QLabel()
+        self.compare_summary.setWordWrap(True)
+        layout.addWidget(self.compare_summary)
+        return section
+
+    def _on_compare_mode_changed(self, index):
+        self.compare_stack.setCurrentIndex(index)
+        self._refresh_stats()
+
+    def _on_compare_category_changed(self, index):
+        if not getattr(self, "_updating_compare_combo", False):
+            self._refresh_stats()
+
+    def _shift_compare(self, delta):
+        step = 12 if self.compare_mode_combo.currentData() == "jahr" else 1
+        self.stats_month = add_months(self.stats_month, delta * step)
+        self._refresh_stats()
+
+    def _refresh_compare(self, month_str):
+        year_mode = self.compare_mode_combo.currentData() == "jahr"
+        self.compare_category_label.setVisible(year_mode)
+        self.compare_category_combo.setVisible(year_mode)
+
+        if not year_mode:
+            prev_month = add_months(self.stats_month, -1)
+            prev_str = prev_month.strftime("%Y-%m")
+            self.compare_label.setText(
+                tr('{0} gegen {1}').format(month_label(self.stats_month), month_label(prev_month)))
+            rows = self.store.category_comparison(month_str, prev_str)
+            self.compare_month_widget.set_data(
+                rows, month_label(self.stats_month), month_label(prev_month))
+            total_cur = sum(r["current"] for r in rows)
+            total_prev = sum(r["previous"] for r in rows)
+            diff = total_cur - total_prev
+            if rows:
+                pct = f" ({diff / total_prev * 100:+.0f} %)".replace(".", ",") if total_prev > 0 else ""
+                self.compare_summary.setText(
+                    tr('Gesamtausgaben: {0} gegenüber {1} im Vormonat – Veränderung {2}{3}. Rot = mehr ausgegeben, grün = weniger.').format(fmt_amount(total_cur), fmt_amount(total_prev), fmt_amount(diff), pct))
+            else:
+                self.compare_summary.setText("")
+            return
+
+        year = self.stats_month.year
+        self.compare_label.setText(tr('Jahr {0}').format(year))
+        previous_choice = self.compare_category_combo.currentData()
+        self._updating_compare_combo = True
+        self.compare_category_combo.clear()
+        self.compare_category_combo.addItem(tr('Alle Ausgaben'), None)
+        for r in self.store.expense_categories_in_year(year):
+            self.compare_category_combo.addItem(f"{r['icon']} {r['category_name']}",
+                                                r["category_name"])
+        idx = self.compare_category_combo.findData(previous_choice)
+        self.compare_category_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self._updating_compare_combo = False
+
+        category = self.compare_category_combo.currentData()
+        values = self.store.category_year_series(year, category)
+        # Durchschnitt nur über die bereits begonnenen Monate (laufendes Jahr);
+        # spätere Monate enthalten nur geplante/wiederkehrende Buchungen und
+        # werden im Diagramm blasser gezeichnet.
+        today = datetime.date.today()
+        if year < today.year:
+            months_counted = 12
+        elif year == today.year:
+            months_counted = today.month
+        else:
+            months_counted = 0
+        elapsed_total = sum(values[:months_counted])
+        average = elapsed_total / months_counted if months_counted and elapsed_total > 0 else 0.0
+        total = sum(values)
+        self.compare_year_widget.set_data(values, average, future_from=months_counted)
+        if total > 0:
+            peak = max(range(12), key=lambda i: values[i])
+            names = months()
+            self.compare_summary.setText(
+                tr('Summe {0} (inkl. geplanter Buchungen): {1} · Ø pro Monat bisher: {2} · teuerster Monat: {3} ({4}). Rote Balken liegen über 120 % des Durchschnitts.').format(year, fmt_amount(total), fmt_amount(average), names[peak], fmt_amount(values[peak])))
+        else:
+            self.compare_summary.setText("")
+
+    def _build_year_compare_section(self):
+        section = QWidget()
+        layout = QVBoxLayout(section)
+
+        nav = QHBoxLayout()
+        layout.addLayout(nav)
+        self.yearcmp_mode_combo = QComboBox()
+        self.yearcmp_mode_combo.addItem(tr('Monate'), "monate")
+        self.yearcmp_mode_combo.addItem(tr('Nach Kategorie'), "kategorien")
+        self.yearcmp_mode_combo.currentIndexChanged.connect(self._on_yearcmp_mode_changed)
+        nav.addWidget(self.yearcmp_mode_combo)
+        self.yearcmp_metric_combo = QComboBox()
+        self.yearcmp_metric_combo.addItem(tr('Ausgaben'), "expense")
+        self.yearcmp_metric_combo.addItem(tr('Einnahmen'), "income")
+        self.yearcmp_metric_combo.currentIndexChanged.connect(lambda _i: self._refresh_stats())
+        nav.addWidget(self.yearcmp_metric_combo)
+        prev_btn = QPushButton("◀")
+        prev_btn.clicked.connect(lambda: self._shift_yearcmp(-1))
+        nav.addWidget(prev_btn)
+        self.yearcmp_label = QLabel()
+        nav.addWidget(self.yearcmp_label)
+        next_btn = QPushButton("▶")
+        next_btn.clicked.connect(lambda: self._shift_yearcmp(1))
+        nav.addWidget(next_btn)
+        nav.addStretch()
+
+        self.yearcmp_stack = QStackedWidget()
+        self.yearcmp_months_widget = YearCompareWidget()
+        self.yearcmp_cat_widget = CategoryCompareWidget()
+        self.yearcmp_stack.addWidget(self.yearcmp_months_widget)
+        self.yearcmp_stack.addWidget(self.yearcmp_cat_widget)
+        layout.addWidget(self.yearcmp_stack)
+
+        self.yearcmp_summary = QLabel()
+        self.yearcmp_summary.setWordWrap(True)
+        layout.addWidget(self.yearcmp_summary)
+        return section
+
+    def _on_yearcmp_mode_changed(self, index):
+        self.yearcmp_stack.setCurrentIndex(index)
+        self._refresh_stats()
+
+    def _shift_yearcmp(self, delta):
+        self.stats_month = add_months(self.stats_month, 12 * delta)
+        self._refresh_stats()
+
+    @staticmethod
+    def _year_delta_text(current, previous):
+        diff = current - previous
+        if previous <= 0:
+            return "" if current <= 0 else tr(" (Vorjahr: –)")
+        sign = "+" if diff > 0 else ("−" if diff < 0 else "±")
+        return (tr(' (Vorjahr {0}, {1}{2} / {3}{4:.0f} %)').format(fmt_amount(previous), sign, fmt_amount(abs(diff)), sign, abs(diff / previous * 100)))
+
+    def _refresh_year_compare(self):
+        year = self.stats_month.year
+        self.yearcmp_label.setText(tr('{0} gegen {1}').format(year, year - 1))
+        by_month = self.yearcmp_mode_combo.currentData() == "monate"
+        self.yearcmp_metric_combo.setVisible(by_month)
+
+        data = self.store.year_comparison(year)
+        today = datetime.date.today()
+        months_started = 12 if year < today.year else (today.month if year == today.year else 0)
+        metric = self.yearcmp_metric_combo.currentData()
+        self.yearcmp_months_widget.set_data(data["months"], metric, str(year), str(year - 1),
+                                            future_from=months_started)
+        rows = self.store.category_comparison(str(year), str(year - 1))
+        self.yearcmp_cat_widget.set_data(rows, str(year), str(year - 1))
+
+        t = data["totals"]
+        rate = t["saved"] / t["income"] * 100 if t["income"] > 0 else None
+        prev_rate = t["prev_saved"] / t["prev_income"] * 100 if t["prev_income"] > 0 else None
+        parts = [
+            tr('Einnahmen {0}{1}').format(fmt_amount(t['income']), self._year_delta_text(t['income'], t['prev_income'])),
+            tr('Ausgaben {0}{1}').format(fmt_amount(t['expense']), self._year_delta_text(t['expense'], t['prev_expense'])),
+            tr('Gespart {0} (Vorjahr {1})').format(fmt_amount(t['saved']), fmt_amount(t['prev_saved'])),
+        ]
+        if rate is not None:
+            rate_text = tr('Sparquote {0:.0f} %').format(rate)
+            if prev_rate is not None:
+                rate_text += tr(' (Vorjahr {0:.0f} %)').format(prev_rate)
+            parts.append(rate_text)
+        note = ""
+        if year >= today.year:
+            note = tr(' Hinweis: Bei laufenden Jahren sind geplante, noch nicht erreichte Monate blass dargestellt und in den Summen enthalten.')
+        self.yearcmp_summary.setText(" · ".join(parts) + "." + note)
 
     def _shift_stats_month(self, delta):
         self.stats_month = add_months(self.stats_month, delta)
@@ -1556,13 +1846,195 @@ class MainWindow(QMainWindow):
         total_expense = sum(n[2] for n in right_nodes)
 
         if total_income > total_expense + 0.005:
-            right_nodes.append(("Übrig/Gespart", "💰", total_income - total_expense,
+            right_nodes.append((tr('Übrig/Gespart'), "💰", total_income - total_expense,
                                  QColor(30, 140, 61)))
         elif total_expense > total_income + 0.005:
-            left_nodes.append(("Fehlbetrag", "⚠️", total_expense - total_income,
+            left_nodes.append((tr("Fehlbetrag"), "⚠️", total_expense - total_income,
                                 QColor(191, 56, 38)))
 
         self.sankey_widget.set_data(left_nodes, right_nodes, max(total_income, total_expense))
+        self._refresh_compare(month_str)
+        self._refresh_year_compare()
+
+    # =====================================================================
+    # Tab: Suche (alle Buchungen filtern)
+    # =====================================================================
+
+    def _build_search_tab(self):
+        root = QWidget()
+        layout = QVBoxLayout(root)
+
+        row1 = QHBoxLayout()
+        layout.addLayout(row1)
+        self.search_text = QLineEdit()
+        self.search_text.setPlaceholderText(tr('Suchen in Beschreibung und Kategorie …'))
+        self.search_text.setClearButtonEnabled(True)
+        self.search_text.textChanged.connect(self._run_search)
+        row1.addWidget(self.search_text, 1)
+
+        self.search_kind = QComboBox()
+        self.search_kind.addItem(tr('Alle Arten'), None)
+        self.search_kind.addItem(tr('Ausgaben'), "ausgabe")
+        self.search_kind.addItem(tr('Einnahmen'), "einnahme")
+        self.search_kind.currentIndexChanged.connect(self._run_search)
+        row1.addWidget(self.search_kind)
+
+        self.search_category = QComboBox()
+        self.search_category.setMinimumWidth(170)
+        self.search_category.currentIndexChanged.connect(self._run_search)
+        row1.addWidget(self.search_category)
+
+        row2 = QHBoxLayout()
+        layout.addLayout(row2)
+        row2.addWidget(QLabel(tr('Zeitraum:')))
+        self.search_period = QComboBox()
+        for label, key in ((tr("Alle"), "alle"), (tr('Dieser Monat'), "monat"),
+                           (tr('Letzte 3 Monate'), "3monate"), (tr('Dieses Jahr'), "jahr"),
+                           (tr('Letztes Jahr'), "vorjahr"), (tr("Eigener Zeitraum"), "eigen")):
+            self.search_period.addItem(label, key)
+        self.search_period.currentIndexChanged.connect(self._on_search_period_changed)
+        row2.addWidget(self.search_period)
+        self.search_from = QDateEdit()
+        self.search_to = QDateEdit()
+        for edit in (self.search_from, self.search_to):
+            edit.setCalendarPopup(True)
+            edit.setDisplayFormat("dd.MM.yyyy")
+            edit.setDate(_date_to_qdate(datetime.date.today()))
+            edit.setEnabled(False)
+            edit.dateChanged.connect(self._run_search)
+        row2.addWidget(self.search_from)
+        row2.addWidget(QLabel(tr('bis')))
+        row2.addWidget(self.search_to)
+
+        row2.addSpacing(16)
+        row2.addWidget(QLabel(tr('Betrag von')))
+        self.search_min = QDoubleSpinBox()
+        self.search_max = QDoubleSpinBox()
+        for spin in (self.search_min, self.search_max):
+            spin.setRange(0, 1_000_000)
+            spin.setDecimals(2)
+            spin.setSuffix(" €")
+            spin.setSpecialValueText(tr('egal'))
+            spin.valueChanged.connect(self._run_search)
+        row2.addWidget(self.search_min)
+        row2.addWidget(QLabel(tr('bis')))
+        row2.addWidget(self.search_max)
+
+        self.search_future = QCheckBox(tr('auch geplante (zukünftige) Buchungen'))
+        self.search_future.toggled.connect(self._run_search)
+        row2.addWidget(self.search_future)
+        row2.addStretch()
+
+        self.search_table = QTableWidget(0, 5)
+        self.search_table.setHorizontalHeaderLabels(
+            [tr('Datum'), tr('Kategorie'), tr('Art'), tr('Betrag'), tr('Beschreibung')])
+        self.search_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.search_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.search_table.verticalHeader().setVisible(False)
+        header = self.search_table.horizontalHeader()
+        header.setSectionResizeMode(4, QHeaderView.Stretch)
+        self.search_table.itemDoubleClicked.connect(self._on_search_row_activated)
+        layout.addWidget(self.search_table, 1)
+
+        self.search_summary = QLabel()
+        layout.addWidget(self.search_summary)
+        hint = QLabel(tr('Doppelklick auf eine Zeile öffnet die Buchung zum Bearbeiten.'))
+        layout.addWidget(hint)
+
+        self._reload_search_categories()
+        self._run_search()
+        return root
+
+    def _reload_search_categories(self):
+        current = self.search_category.currentData()
+        self.search_category.blockSignals(True)
+        self.search_category.clear()
+        self.search_category.addItem(tr('Alle Kategorien'), None)
+        for c in self.store.list_categories():
+            self.search_category.addItem(f"{c['icon']} {c['name']}", c["id"])
+        idx = self.search_category.findData(current)
+        self.search_category.setCurrentIndex(idx if idx >= 0 else 0)
+        self.search_category.blockSignals(False)
+
+    def _on_search_period_changed(self, *_args):
+        key = self.search_period.currentData()
+        today = datetime.date.today()
+        ranges = {
+            "monat": (today.replace(day=1), today),
+            "3monate": (add_months(today.replace(day=1), -2), today),
+            "jahr": (today.replace(month=1, day=1), today),
+            "vorjahr": (datetime.date(today.year - 1, 1, 1),
+                        datetime.date(today.year - 1, 12, 31)),
+        }
+        custom = key == "eigen"
+        self.search_from.setEnabled(custom)
+        self.search_to.setEnabled(custom)
+        if key in ranges:
+            for edit, value in zip((self.search_from, self.search_to), ranges[key]):
+                edit.blockSignals(True)
+                edit.setDate(_date_to_qdate(value))
+                edit.blockSignals(False)
+        self._run_search()
+
+    def _search_date_range(self):
+        key = self.search_period.currentData()
+        if key == "alle":
+            return None, None
+        return (self.search_from.date().toString("yyyy-MM-dd"),
+                self.search_to.date().toString("yyyy-MM-dd"))
+
+    def _run_search(self, *_args):
+        if not hasattr(self, "search_table"):
+            return
+        date_from, date_to = self._search_date_range()
+        rows, truncated = self.store.search_transactions(
+            text=self.search_text.text() or None,
+            category_id=self.search_category.currentData(),
+            kind=self.search_kind.currentData(),
+            date_from=date_from, date_to=date_to,
+            min_amount=self.search_min.value() or None,
+            max_amount=self.search_max.value() or None,
+            include_future=self.search_future.isChecked(),
+        )
+        self.search_table.setRowCount(len(rows))
+        income = expense = 0.0
+        for i, r in enumerate(rows):
+            d = datetime.date.fromisoformat(r["date"])
+            cells = [d.strftime("%d.%m.%Y"), f"{r['icon']} {r['category_name']}",
+                     tr('Einnahme') if r["kind"] == "einnahme" else tr('Ausgabe'),
+                     fmt_amount(r["amount"]), r["description"] or ""]
+            for col, text in enumerate(cells):
+                item = QTableWidgetItem(text)
+                if col == 0:
+                    item.setData(Qt.UserRole, r["id"])
+                if col == 3:
+                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                    item.setForeground(QColor(76, 175, 80) if r["amount"] >= 0
+                                       else QColor(224, 82, 69))
+                self.search_table.setItem(i, col, item)
+            if r["amount"] >= 0:
+                income += r["amount"]
+            else:
+                expense += -r["amount"]
+        self.search_table.resizeColumnsToContents()
+        self.search_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
+        text = (tr('{0} Treffer · Einnahmen {1} · Ausgaben {2} · Saldo {3}').format(len(rows), fmt_amount(income), fmt_amount(expense), fmt_amount(income - expense)))
+        if truncated:
+            text += tr(' · nur die neuesten 2000 Treffer werden angezeigt – Filter enger setzen')
+        self.search_summary.setText(text)
+
+    def _on_search_row_activated(self, item):
+        tx_id = self.search_table.item(item.row(), 0).data(Qt.UserRole)
+        existing = self.store.get_transaction(tx_id)
+        if existing is None:
+            return
+        day = datetime.date.fromisoformat(existing["date"])
+        dialog = TransactionDialog(self, self.store, day, existing=existing)
+        if dialog.exec() == TransactionDialog.Accepted:
+            dialog.save()
+            self._after_transactions_changed()
+            self._refresh_stats()
+            self._run_search()
 
     # =====================================================================
     # Tab 7: Export / Import
@@ -1573,72 +2045,97 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(widget)
 
         csv_label = QLabel(
-            "CSV-Export aller Buchungen – zum Öffnen/Weiterverarbeiten in "
-            "Excel oder Numbers/LibreOffice Calc."
+            tr('CSV-Export aller Buchungen – zum Öffnen/Weiterverarbeiten in Excel oder Numbers/LibreOffice Calc.')
         )
         csv_label.setWordWrap(True)
         layout.addWidget(csv_label)
-        csv_btn = QPushButton("Buchungen als CSV exportieren…")
+        csv_btn = QPushButton(tr('Buchungen als CSV exportieren…'))
         csv_btn.clicked.connect(self._on_export_csv)
         layout.addWidget(csv_btn)
 
         csv_import_label = QLabel(
-            "CSV-Import: Buchungen aus einer anderen Haushaltsbuch- oder "
-            "Banking-Software übernehmen. Trennzeichen sowie deutsche/"
-            "englische Zahlen- und Datumsformate werden automatisch erkannt."
+            tr('CSV-Import: Buchungen aus einer anderen Haushaltsbuch- oder Banking-Software übernehmen. Trennzeichen sowie deutsche/englische Zahlen- und Datumsformate werden automatisch erkannt.')
         )
         csv_import_label.setWordWrap(True)
         layout.addWidget(csv_import_label)
-        csv_import_btn = QPushButton("Buchungen aus CSV importieren…")
+        csv_import_btn = QPushButton(tr('Buchungen aus CSV importieren…'))
         csv_import_btn.clicked.connect(self._on_import_csv)
         layout.addWidget(csv_import_btn)
 
         json_label = QLabel(
-            "Vollständiges Backup (JSON) – enthält alle Buchungen, Vorlagen, "
-            "Budgets, Sparziele, ETF-Pläne und Kategorien."
+            tr('Vollständiges Backup (JSON) – enthält alle Buchungen, Vorlagen, Budgets, Sparziele, ETF-Pläne und Kategorien.')
         )
         json_label.setWordWrap(True)
         layout.addWidget(json_label)
-        export_json_btn = QPushButton("Backup als JSON exportieren…")
+        export_json_btn = QPushButton(tr('Backup als JSON exportieren…'))
         export_json_btn.clicked.connect(self._on_export_json)
         layout.addWidget(export_json_btn)
-        import_json_btn = QPushButton("Backup aus JSON importieren…")
+        import_json_btn = QPushButton(tr('Backup aus JSON importieren…'))
         import_json_btn.clicked.connect(self._on_import_json)
         layout.addWidget(import_json_btn)
+
+        backup_label = QLabel(
+            tr('Automatische Sicherung: Beim ersten Start eines Tages legt Plutos eine Kopie der Datenbank in {0} an (die letzten {1} bleiben erhalten).').format(self.store.backup_dir, self.store.BACKUP_KEEP)
+        )
+        backup_label.setWordWrap(True)
+        layout.addWidget(backup_label)
+        backup_btn = QPushButton(tr('Datenbank jetzt sichern'))
+        backup_btn.clicked.connect(self._on_backup_now)
+        layout.addWidget(backup_btn)
+
+        lang_row = QHBoxLayout()
+        lang_row.addWidget(QLabel("Sprache / Language:"))
+        self.language_combo = QComboBox()
+        for code, name in LANGUAGES.items():
+            self.language_combo.addItem(name, code)
+        self.language_combo.setCurrentIndex(
+            max(0, self.language_combo.findData(get_language())))
+        self.language_combo.currentIndexChanged.connect(self._on_language_changed)
+        lang_row.addWidget(self.language_combo)
+        lang_row.addStretch()
+        layout.addLayout(lang_row)
 
         self.export_status_label = QLabel()
         layout.addWidget(self.export_status_label)
         layout.addStretch()
         return widget
 
+    def _on_language_changed(self, index):
+        self.store.set_setting("language", self.language_combo.itemData(index))
+        self.export_status_label.setText(
+            "Neustart erforderlich, damit die Sprache wirksam wird. / "
+            "Please restart Plutos to apply the language.")
+
     def _on_export_csv(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Buchungen als CSV exportieren",
+        path, _ = QFileDialog.getSaveFileName(self, tr('Buchungen als CSV exportieren'),
                                                "haushaltsbuch_export.csv", "CSV-Dateien (*.csv)")
         if path:
             self.store.export_transactions_csv(path)
-            self.export_status_label.setText(f"CSV exportiert nach: {path}")
+            self.export_status_label.setText(tr('CSV exportiert nach: {0}').format(path))
 
     def _on_import_csv(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Buchungen aus CSV importieren",
+        path, _ = QFileDialog.getOpenFileName(self, tr('Buchungen aus CSV importieren'),
                                                "", "CSV-Dateien (*.csv)")
         if not path:
             return
         try:
             result = self.store.import_transactions_csv(path)
         except Exception as exc:
-            QMessageBox.critical(self, "Fehler", f"CSV konnte nicht gelesen werden:\n{exc}")
+            QMessageBox.critical(self, tr('Fehler'), tr('CSV konnte nicht gelesen werden:\n{0}').format(exc))
             return
 
-        summary = f"{result['imported']} Buchung(en) importiert"
+        summary = tr('{0} Buchung(en) importiert').format(result['imported'])
+        if result.get("duplicates"):
+            summary += tr(', {0} bereits vorhanden (nicht doppelt angelegt)').format(result['duplicates'])
         if result["skipped"]:
-            summary += f", {result['skipped']} übersprungen"
-        self.export_status_label.setText(f"CSV importiert von: {path} – {summary}.")
+            summary += tr(', {0} übersprungen').format(result['skipped'])
+        self.export_status_label.setText(tr('CSV importiert von: {0} – {1}.').format(path, summary))
 
-        detail_lines = "\n".join(result["errors"][:15])
+        detail_lines = "\n".join(_localize_import_error(e) for e in result["errors"][:15])
         if len(result["errors"]) > 15:
-            detail_lines += f"\n… und {len(result['errors']) - 15} weitere."
+            detail_lines += tr('\n… und {0} weitere.').format(len(result['errors']) - 15)
         icon = QMessageBox.Information if not result["errors"] else QMessageBox.Warning
-        box = QMessageBox(icon, "CSV-Import", summary + (":" if detail_lines else "."), parent=self)
+        box = QMessageBox(icon, tr("CSV-Import"), summary + (":" if detail_lines else "."), parent=self)
         if detail_lines:
             box.setDetailedText(detail_lines)
         box.exec()
@@ -1647,27 +2144,31 @@ class MainWindow(QMainWindow):
         self._after_transactions_changed()
         self._refresh_stats()
 
+    def _on_backup_now(self):
+        path = self.store.create_db_backup(force=True)
+        self.export_status_label.setText(tr('Datenbank gesichert: {0}').format(path))
+
     def _on_export_json(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Backup als JSON exportieren",
+        path, _ = QFileDialog.getSaveFileName(self, tr('Backup als JSON exportieren'),
                                                "haushaltsbuch_backup.json", "JSON-Dateien (*.json)")
         if path:
             self.store.export_backup_json(path)
-            self.export_status_label.setText(f"Backup exportiert nach: {path}")
+            self.export_status_label.setText(tr('Backup exportiert nach: {0}').format(path))
 
     def _on_import_json(self):
         response = QMessageBox.warning(
-            self, "Backup importieren", "Import ersetzt alle aktuellen Daten. Fortfahren?",
+            self, tr('Backup importieren'), tr('Import ersetzt alle aktuellen Daten. Fortfahren?'),
             QMessageBox.Ok | QMessageBox.Cancel,
         )
         if response != QMessageBox.Ok:
             return
-        path, _ = QFileDialog.getOpenFileName(self, "Backup importieren",
+        path, _ = QFileDialog.getOpenFileName(self, tr('Backup importieren'),
                                                "", "JSON-Dateien (*.json)")
         if not path:
             return
         self.store.import_backup_json(path)
         self.store.ensure_horizon(self._selected_calendar_month())
-        self.export_status_label.setText(f"Backup importiert von: {path}")
+        self.export_status_label.setText(tr('Backup importiert von: {0}').format(path))
         self._after_transactions_changed()
         self._refresh_goals_tab()
         self._refresh_stats()

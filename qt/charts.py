@@ -13,6 +13,8 @@ from PySide6.QtWidgets import QWidget, QSizePolicy
 from PySide6.QtGui import QPainter, QColor, QPen, QPainterPath
 from PySide6.QtCore import Qt, QRectF
 
+from i18n import tr, months_short
+
 CURRENCY = "€"
 
 CATEGORY_COLORS = [
@@ -68,7 +70,7 @@ class PieChartWidget(_BaseChart):
         painter.setRenderHint(QPainter.Antialiasing)
 
         if not self.data:
-            self._draw_empty_message(painter, "Keine Ausgaben in diesem Monat.")
+            self._draw_empty_message(painter, tr('Keine Ausgaben in diesem Monat.'))
             return
 
         width, height = self.width(), self.height()
@@ -123,7 +125,7 @@ class TrendChartWidget(_BaseChart):
         painter.setRenderHint(QPainter.Antialiasing)
 
         if not self.data:
-            self._draw_empty_message(painter, "Keine Daten.")
+            self._draw_empty_message(painter, tr('Keine Daten.'))
             return
 
         width, height = self.width(), self.height()
@@ -196,7 +198,7 @@ class SankeyWidget(_BaseChart):
         if (not self.left_nodes and not self.right_nodes) or self.total <= 0:
             self._draw_empty_message(
                 painter,
-                "Keine Buchungen in diesem Monat."
+                tr('Keine Buchungen in diesem Monat.')
             )
             return
 
@@ -310,7 +312,7 @@ class SankeyWidget(_BaseChart):
 
         painter.setPen(fg)
 
-        title = "Gesamt"
+        title = tr('Gesamt')
         title_w = painter.fontMetrics().horizontalAdvance(title)
 
         painter.drawText(
@@ -539,7 +541,7 @@ class EtfComparisonWidget(_BaseChart):
         painter.setRenderHint(QPainter.Antialiasing)
 
         if not self.plans:
-            self._draw_empty_message(painter, "Noch keine gespeicherten Sparpläne zum Vergleichen.")
+            self._draw_empty_message(painter, tr('Noch keine gespeicherten Sparpläne zum Vergleichen.'))
             return
 
         width, height = self.width(), self.height()
@@ -566,7 +568,7 @@ class EtfComparisonWidget(_BaseChart):
         for fraction in (0, 0.5, 1.0):
             x = margin_left + fraction * plot_w
             year = max(1, round(max_year * fraction))
-            painter.drawText(int(x - 6), int(height - margin_bottom + 16), f"J{year}")
+            painter.drawText(int(x - 6), int(height - margin_bottom + 16), tr('J{0}').format(year))
 
         legend_y = margin_top
         for plan in self.plans:
@@ -594,3 +596,249 @@ class EtfComparisonWidget(_BaseChart):
             painter.drawText(int(legend_x + 20), int(legend_y + 8), plan["name"])
             painter.drawText(int(legend_x + 20), int(legend_y + 20), fmt_amount(final_value))
             legend_y += 40
+
+
+
+PREVIOUS_COLOR = QColor(120, 134, 150)
+CURRENT_COLOR = QColor(51, 120, 191)
+
+
+def format_delta(row):
+    """Text für die Veränderung einer Kategorie, z. B. '+34,20 € (+12 %)'."""
+    if row["previous"] <= 0 and row["current"] > 0:
+        return tr('+{0} (neu)').format(fmt_amount(row['diff']))
+    if row["current"] <= 0 and row["previous"] > 0:
+        return f"−{fmt_amount(-row['diff'])} (−100 %)"
+    sign = "+" if row["diff"] > 0 else ("−" if row["diff"] < 0 else "±")
+    pct = f"{abs(row['pct']):.0f} %" if row["pct"] is not None else "–"
+    return f"{sign}{fmt_amount(abs(row['diff']))} ({sign}{pct})"
+
+
+class CategoryCompareWidget(_BaseChart):
+    """Horizontale Balkenpaare je Ausgabenkategorie: Vergleichsmonat (grau)
+    gegen aktuellen Monat (blau), rechts die Veränderung. Mehr Ausgaben
+    erscheinen rot, weniger grün."""
+
+    MAX_ROWS = 12
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.rows = []
+        self.label_current = ""
+        self.label_previous = ""
+
+    def set_data(self, rows, label_current, label_previous):
+        self.rows = rows[:self.MAX_ROWS]
+        self.label_current = label_current
+        self.label_previous = label_previous
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        if not self.rows:
+            self._draw_empty_message(painter, tr('Keine Ausgaben in diesen beiden Monaten.'))
+            return
+
+        fg = self._fg_color()
+        width, height = self.width(), self.height()
+        fm = painter.fontMetrics()
+        label_w, delta_w = 170, 190
+        top = 30
+        plot_x = label_w + 8
+        plot_w = max(40, width - plot_x - delta_w - 70)
+        row_h = (height - top - 6) / len(self.rows)
+        bar_h = min(18.0, row_h * 0.36)
+        max_val = max([r["current"] for r in self.rows] +
+                      [r["previous"] for r in self.rows] + [1])
+
+        # Legende
+        x = label_w
+        for color, text in ((PREVIOUS_COLOR, self.label_previous),
+                            (CURRENT_COLOR, self.label_current)):
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(color)
+            painter.drawRect(QRectF(x, 8, 12, 12))
+            painter.setPen(fg)
+            painter.drawText(int(x + 18), 19, text)
+            x += 18 + fm.horizontalAdvance(text) + 24
+
+        for i, r in enumerate(self.rows):
+            y = top + i * row_h
+            mid = y + row_h / 2
+
+            painter.setPen(fg)
+            name = fm.elidedText(f"{r['icon']} {r['name']}", Qt.ElideRight, label_w - 6)
+            painter.drawText(QRectF(0, y, label_w - 6, row_h),
+                             Qt.AlignRight | Qt.AlignVCenter, name)
+
+            for k, (value, color) in enumerate(((r["previous"], PREVIOUS_COLOR),
+                                                (r["current"], CURRENT_COLOR))):
+                by = mid - bar_h - 1 if k == 0 else mid + 1
+                bw = value / max_val * plot_w
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(color)
+                painter.drawRect(QRectF(plot_x, by, max(bw, 1 if value > 0 else 0), bar_h))
+                painter.setPen(QColor(fg.red(), fg.green(), fg.blue(), 200))
+                painter.drawText(int(plot_x + bw + 6), int(by + bar_h - 3), fmt_amount(value))
+
+            if r["diff"] > 0.005:
+                painter.setPen(RED.lighter(125))
+            elif r["diff"] < -0.005:
+                painter.setPen(GREEN.lighter(135))
+            else:
+                painter.setPen(fg)
+            painter.drawText(QRectF(width - delta_w, y, delta_w - 6, row_h),
+                             Qt.AlignRight | Qt.AlignVCenter, format_delta(r))
+
+
+class CategoryYearWidget(_BaseChart):
+    """Säulendiagramm der Monatsausgaben eines Jahres (für eine Kategorie oder
+    alle Ausgaben) mit gestrichelter Durchschnittslinie."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.values = []
+        self.average = 0.0
+        self.future_from = 12  # ab diesem Monatsindex (0-11) gelten Werte als geplant
+
+    def set_data(self, values, average, future_from=12):
+        self.values = values
+        self.average = average
+        self.future_from = future_from
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        if not self.values or max(self.values) <= 0:
+            self._draw_empty_message(painter, tr('Keine Ausgaben in diesem Jahr.'))
+            return
+
+        fg = self._fg_color()
+        width, height = self.width(), self.height()
+        margin_left, margin_right, margin_top, margin_bottom = 70, 20, 26, 30
+        plot_w = max(10, width - margin_left - margin_right)
+        plot_h = max(10, height - margin_top - margin_bottom)
+        max_val = max(max(self.values), self.average) * 1.08
+
+        axis = QColor(fg.red(), fg.green(), fg.blue(), 110)
+        painter.setPen(axis)
+        painter.drawLine(margin_left, margin_top, margin_left, height - margin_bottom)
+        painter.drawLine(margin_left, height - margin_bottom,
+                         width - margin_right, height - margin_bottom)
+        painter.setPen(QColor(fg.red(), fg.green(), fg.blue(), 190))
+        for fraction in (0, 0.5, 1.0):
+            y = height - margin_bottom - fraction * plot_h
+            painter.drawText(4, int(y + 4), fmt_amount(max_val * fraction))
+
+        group_w = plot_w / 12
+        bar_w = group_w * 0.62
+        small = painter.font()
+        small.setPointSizeF(max(7.0, small.pointSizeF() - 1.5))
+        normal = painter.font()
+        for i, value in enumerate(self.values):
+            x0 = margin_left + i * group_w + (group_w - bar_w) / 2
+            h = value / max_val * plot_h
+            painter.setPen(Qt.NoPen)
+            color = (CURRENT_COLOR if value <= self.average * 1.2 or self.average <= 0
+                     else RED.lighter(115))
+            if i >= self.future_from:  # geplante (zukünftige) Monate blasser
+                color = QColor(color.red(), color.green(), color.blue(), 90)
+            painter.setBrush(color)
+            painter.drawRect(QRectF(x0, height - margin_bottom - h, bar_w, h))
+            painter.setPen(QColor(fg.red(), fg.green(), fg.blue(), 230))
+            painter.drawText(int(x0 + bar_w / 2 - painter.fontMetrics().horizontalAdvance(months_short()[i]) / 2),
+                             int(height - margin_bottom + 16), months_short()[i])
+            if value > 0:
+                painter.setFont(small)
+                txt = f"{value:,.0f}".replace(",", ".")
+                painter.drawText(int(x0 + bar_w / 2 - painter.fontMetrics().horizontalAdvance(txt) / 2),
+                                 int(height - margin_bottom - h - 4), txt)
+                painter.setFont(normal)
+
+        if self.average > 0:
+            y = height - margin_bottom - self.average / max_val * plot_h
+            pen = QPen(QColor(230, 158, 0))
+            pen.setStyle(Qt.DashLine)
+            pen.setWidth(2)
+            painter.setPen(pen)
+            painter.drawLine(margin_left, int(y), width - margin_right, int(y))
+            painter.setPen(QColor(230, 158, 0))
+            painter.drawText(margin_left + 6, int(y - 5), tr('Ø {0}').format(fmt_amount(self.average)))
+
+
+class YearCompareWidget(_BaseChart):
+    """Gruppierte Monatsbalken: Vorjahr (grau) gegen aktuelles Jahr (blau) für
+    Einnahmen ODER Ausgaben. Monate des aktuellen Jahres, die noch nicht
+    begonnen haben (nur geplante Buchungen), sind blasser."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.months = []
+        self.value_key = "expense"
+        self.label_current = ""
+        self.label_previous = ""
+        self.future_from = 12
+
+    def set_data(self, months, value_key, label_current, label_previous, future_from=12):
+        self.months = months
+        self.value_key = value_key
+        self.label_current = label_current
+        self.label_previous = label_previous
+        self.future_from = future_from
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        key, prev_key = self.value_key, "prev_" + self.value_key
+        if not self.months or max([m[key] for m in self.months] +
+                                  [m[prev_key] for m in self.months]) <= 0:
+            self._draw_empty_message(painter, tr('Keine Buchungen in diesen beiden Jahren.'))
+            return
+
+        fg = self._fg_color()
+        width, height = self.width(), self.height()
+        margin_left, margin_right, margin_top, margin_bottom = 70, 20, 34, 30
+        plot_w = max(10, width - margin_left - margin_right)
+        plot_h = max(10, height - margin_top - margin_bottom)
+        max_val = max([m[key] for m in self.months] + [m[prev_key] for m in self.months]) * 1.05
+        fm = painter.fontMetrics()
+
+        x = margin_left
+        for color, text in ((PREVIOUS_COLOR, self.label_previous),
+                            (CURRENT_COLOR, self.label_current)):
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(color)
+            painter.drawRect(QRectF(x, 10, 12, 12))
+            painter.setPen(fg)
+            painter.drawText(int(x + 18), 21, text)
+            x += 18 + fm.horizontalAdvance(text) + 24
+
+        axis = QColor(fg.red(), fg.green(), fg.blue(), 110)
+        painter.setPen(axis)
+        painter.drawLine(margin_left, margin_top, margin_left, height - margin_bottom)
+        painter.drawLine(margin_left, height - margin_bottom,
+                         width - margin_right, height - margin_bottom)
+        painter.setPen(QColor(fg.red(), fg.green(), fg.blue(), 190))
+        for fraction in (0, 0.5, 1.0):
+            y = height - margin_bottom - fraction * plot_h
+            painter.drawText(4, int(y + 4), fmt_amount(max_val * fraction))
+
+        group_w = plot_w / 12
+        bar_w = group_w * 0.36
+        for i, m in enumerate(self.months):
+            x0 = margin_left + i * group_w + group_w * 0.12
+            for k, (value, color) in enumerate(((m[prev_key], PREVIOUS_COLOR),
+                                                (m[key], CURRENT_COLOR))):
+                if k == 1 and i >= self.future_from:
+                    color = QColor(color.red(), color.green(), color.blue(), 90)
+                h = value / max_val * plot_h
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(color)
+                painter.drawRect(QRectF(x0 + k * (bar_w + 2), height - margin_bottom - h, bar_w, h))
+            painter.setPen(QColor(fg.red(), fg.green(), fg.blue(), 230))
+            label = months_short()[i]
+            painter.drawText(int(x0 + bar_w - fm.horizontalAdvance(label) / 2 + 1),
+                             int(height - margin_bottom + 16), label)

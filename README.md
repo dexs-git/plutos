@@ -37,9 +37,33 @@ Datenbank-Logik teilen:
   Kapitalertragsteuer (Teilfreistellung, Soli, Sparerpauschbetrag) und
   wahlweise jährlicher Vorabpauschale-Simulation, plus Vergleichsdiagramm
   gespeicherter Pläne
-- **Auswertungen**: Kreisdiagramm, Trend über mehrere Monate und
-  Sankey-Geldfluss-Diagramm
-- **Kategorien** mit eigenem Icon, **CSV-/JSON-Export und -Import**
+- **Auswertungen**: Kreisdiagramm, Trend über mehrere Monate,
+  Sankey-Geldfluss-Diagramm und ein **Kategorienvergleich** (Monat gegen
+  Vormonat mit Differenz in € und %, Jahresverlauf je Kategorie mit
+  Durchschnittslinie)
+- **Kategorien** mit eigenem Icon, **CSV-/JSON-Export und -Import** – der
+  CSV-Import erkennt Bank-Spalten, schlägt Kategorien aus dem
+  Buchungstext vor und legt bereits vorhandene Buchungen nicht doppelt an
+- **Suche und Filter** über alle Buchungen: Freitext, Art, Kategorie,
+  Zeitraum und Betragsspanne, mit Summenzeile – ein Doppelklick öffnet die
+  Buchung zum Bearbeiten
+- **Schnellbuchungs-Vorlagen** („Tanken 60 €“ per Klick) und **Rückgängig**
+  (Strg+Z) für die zuletzt gelöschte Buchung
+- **Budget-Warnungen**: Farbmarkierung ab 80 % und 100 % im Budgets-Tab,
+  dazu ein Hinweis, sobald eine neue Ausgabe eine dieser Schwellen überschreitet
+- **Jahresübersicht mit Vorjahresvergleich**: Einnahmen, Ausgaben und
+  Sparquote je Monat, dem gleichen Monat des Vorjahres gegenübergestellt
+- **ETF-Szenarien**: pessimistisch / erwartet / optimistisch nebeneinander,
+  inklusive Kosten-Spread, Steuern und inflationsbereinigtem Endwert
+  (Simulation, keine Anlageempfehlung)
+- **Notgroschen als Unterkonto** (optional): Girokonto und Notgroschen werden
+  getrennt ausgewiesen, ohne dass gebuchte Sparbeiträge doppelt zählen
+- **Deutsch und Englisch**: Sprache im Tab „Export / Import“ wählbar
+  (Neustart nötig); alle Beschriftungen, Hinweise und Meldungen sind übersetzt.
+  Eigene Kategorienamen und die beim ersten Start angelegten Standardkategorien
+  bleiben, wie sie in der Datenbank stehen.
+- **Automatische Backups**: täglich eine Kopie der Datenbank (die letzten
+  14 bleiben erhalten), zusätzlich „Datenbank jetzt sichern“ per Klick
 - **„?“-Hilfe-Buttons** neben allen erklärungsbedürftigen Eingabefeldern
 
 ## Screenshots
@@ -50,6 +74,8 @@ Datenbank-Logik teilen:
 | ![Finanzplanung](docs/screenshots/04-finanzplanung.png) | ![ETF-Sparplan](docs/screenshots/05-etf.png) |
 
 ![Auswertungen](docs/screenshots/06-auswertungen.png)
+
+![Kategorienvergleich](docs/screenshots/08-kategorienvergleich.png)
 
 ## GTK und Qt im Vergleich
 
@@ -103,22 +129,16 @@ Entwickelt iterativ im Gespräch mit [Claude](https://claude.ai) (Anthropic).
 Die Berechnungslogik ist durch automatisierte Funktionstests abgedeckt; alle
 Screenshots sind echte Aufnahmen der laufenden App.
 
+## Tests
+
+Die gemeinsame Datenlogik (`gtk/db.py` und `qt/db.py`) wird mit `pytest`
+getestet:
+
+```bash
+pip install pytest
+python -m pytest tests -q
+```
+
 ## Lizenz
 
-*MIT License
-Copyright (c) 2026 dexs-git
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.*
+Veröffentlicht unter der [MIT-Lizenz](LICENSE).

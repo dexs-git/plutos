@@ -289,6 +289,20 @@ Kapitalertragsteuer, Soli, Sparerpauschbetrag) kurz, was gemeint ist.
     „Fehlbetrag“, damit beide Seiten immer im Gleichgewicht sind. Die Bänder
     stellen die anteilige Verteilung über das Monatsbudget dar, keine echte
     1:1-Zuordnung einzelner Buchungen.
+  - **Kategorien vergleichen**: „Monat gegen Vormonat“ stellt jede
+    Ausgabenkategorie dem Vormonat gegenüber (Differenz in € und %, rot =
+    mehr ausgegeben, grün = weniger). „Jahresverlauf“ zeigt eine Kategorie
+    oder alle Ausgaben über zwölf Monate mit Durchschnittslinie; Monate nach
+    dem aktuellen sind (geplant) blasser dargestellt.
+- **Suche**: eigener Tab zum Filtern aller Buchungen nach Freitext (Beschreibung
+  und Kategorie), Art, Kategorie, Zeitraum und Betragsspanne; die Summenzeile
+  zeigt Treffer, Einnahmen, Ausgaben und Saldo. Doppelklick bearbeitet die Buchung.
+- **Vorlagen und Rückgängig** (Buchungen-Tab): „Als Vorlage speichern“ merkt die
+  markierte Buchung, „Aus Vorlage buchen…“ legt sie am gewählten Tag an.
+  „Rückgängig“ (Strg+Z) stellt die zuletzt gelöschte Buchung wieder her.
+- **Budget-Warnungen**: im Budgets-Tab werden Beträge ab 80 % orange und ab
+  100 % rot markiert (⚠/⛔ im Fortschrittsbalken); beim Speichern einer Ausgabe
+  erscheint ein Hinweis, wenn dadurch eine dieser Schwellen überschritten wird.
 
 ### Export / Import
 - **CSV exportieren**: alle Buchungen als `.csv` (Semikolon-getrennt, deutsches
@@ -407,3 +421,12 @@ Ideen für weitere Ausbaustufen:
   größeres Vorhaben)
 - Mobile Begleit-App mit Sync übers Heim-WLAN (siehe gesonderte Rückmeldung
   im Chat – deutlich größeres, eigenständiges Projekt)
+
+
+## Neu in dieser Version
+
+- **Jahresübersicht mit Vorjahresvergleich** (Auswertungen), **ETF-Szenarien**
+  (pessimistisch / erwartet / optimistisch, inkl. Kosten, Steuern, Inflation)
+- **Notgroschen als Unterkonto** (Finanzplanung): Girokonto, Notgroschen und Gesamt getrennt
+- **Deutsch / Englisch** – Auswahl im Tab „Export / Import“, wirksam nach Neustart
+  (Übersetzungen in `i18n.py`; fehlt ein Text, bleibt er einfach Deutsch)

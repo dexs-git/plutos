@@ -56,7 +56,7 @@ echo    OK.
 
 echo 3) Kopiere Programmdateien nach %APP_DIR% ...
 if not exist "%APP_DIR%" mkdir "%APP_DIR%"
-for %%F in (main.py db.py charts.py dialogs.py) do (
+for %%F in (main.py db.py charts.py dialogs.py i18n.py) do (
     if not exist "%SCRIPT_DIR%%%F" (
         echo    FEHLER: %%F fehlt im selben Ordner wie dieses Skript.
         pause

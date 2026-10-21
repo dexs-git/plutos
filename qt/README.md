@@ -5,11 +5,14 @@ läuft nativ unter macOS, Windows und Linux. Gleicher Funktionsumfang wie die
 GTK-Version: Buchungen mit Kalenderansicht (Monat/Woche/Jahr), Budgets,
 Sparziele mit manueller Priorität, Finanzplanung (Kontostand, Notgroschen,
 Anlage-Empfehlung, Risikoprofil), ETF-Sparplan-Rechner (inkl. Vorabpauschale und
-Plan-Vergleich), Auswertungen (Kreisdiagramm/Trend/Sankey), Kategorien mit
-Icons, CSV-/JSON-Export/-Import.
+Plan-Vergleich), Auswertungen (Kreisdiagramm/Trend/Sankey/Kategorienvergleich), Kategorien mit
+Icons, CSV-/JSON-Export/-Import (mit Duplikat-Erkennung), tägliche
+automatische Datenbank-Backups.
+Suche/Filter über alle Buchungen, Schnellbuchungs-Vorlagen, Rückgängig (Strg+Z)
+und Budget-Warnungen ab 80 % / 100 %.
 
 Alle vier Programmdateien werden gebraucht und müssen im selben Ordner
-liegen: `main.py`, `db.py`, `charts.py`, `dialogs.py`.
+liegen: `main.py`, `db.py`, `charts.py`, `dialogs.py`, `i18n.py`.
 
 ## Installation
 
@@ -87,7 +90,7 @@ startest, siehst du immer dieselben Buchungen.
 
 Allgemein gilt für alle drei Plattformen: **fehlende Programmdatei** (z. B.
 `ModuleNotFoundError: No module named 'charts'` o. Ä.) bedeutet, dass nicht
-alle vier Dateien (`main.py`, `db.py`, `charts.py`, `dialogs.py`) im
+alle fünf Dateien (`main.py`, `db.py`, `charts.py`, `dialogs.py`, `i18n.py`) im
 selben Ordner liegen – alle vier zusammen an einen Ort legen und erneut
 versuchen.
 
@@ -185,3 +188,12 @@ Da Qt für sich in Anspruch nimmt, sich auf jeder Plattform gleich zu
 verhalten, gibt das gute Zuversicht – *visuelle* Details (wie nativ es sich
 anfühlt, Schriftgrößen, Fensterrahmen) kann ich damit aber nicht
 verifizieren. Bitte gib Rückmeldung, falls dir dort etwas komisch vorkommt.
+
+
+## Neu in dieser Version
+
+- **Jahresübersicht mit Vorjahresvergleich** (Auswertungen), **ETF-Szenarien**
+  (pessimistisch / erwartet / optimistisch, inkl. Kosten, Steuern, Inflation)
+- **Notgroschen als Unterkonto** (Finanzplanung): Girokonto, Notgroschen und Gesamt getrennt
+- **Deutsch / Englisch** – Auswahl im Tab „Export / Import“, wirksam nach Neustart
+  (Übersetzungen in `i18n.py`; fehlt ein Text, bleibt er einfach Deutsch)

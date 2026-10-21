@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, QDate
 
+from i18n import tr
 from db import FinanceStore
 from charts import fmt_amount
 
@@ -58,28 +59,28 @@ class TransactionDialog(QDialog):
         super().__init__(parent)
         self.store = store
         self.existing = existing
-        self.setWindowTitle("Buchung bearbeiten" if existing else "Buchung hinzufügen")
+        self.setWindowTitle(tr('Buchung bearbeiten') if existing else tr('Buchung hinzufügen'))
         self.setMinimumWidth(380)
 
         layout = QVBoxLayout(self)
         grid = QGridLayout()
         layout.addLayout(grid)
 
-        grid.addWidget(QLabel("Art:"), 0, 0)
+        grid.addWidget(QLabel(tr('Art:')), 0, 0)
         self.kind_combo = QComboBox()
-        self.kind_combo.addItem("Ausgabe", "ausgabe")
-        self.kind_combo.addItem("Einnahme", "einnahme")
+        self.kind_combo.addItem(tr('Ausgabe'), "ausgabe")
+        self.kind_combo.addItem(tr('Einnahme'), "einnahme")
         default_kind = existing["kind"] if existing else "ausgabe"
         self.kind_combo.setCurrentIndex(0 if default_kind == "ausgabe" else 1)
         self.kind_combo.currentIndexChanged.connect(self._reload_categories)
         grid.addWidget(self.kind_combo, 0, 1)
 
-        grid.addWidget(QLabel("Kategorie:"), 1, 0)
+        grid.addWidget(QLabel(tr('Kategorie:')), 1, 0)
         self.category_combo = QComboBox()
         grid.addWidget(self.category_combo, 1, 1)
         self._reload_categories(preselect=existing["category_id"] if existing else None)
 
-        grid.addWidget(QLabel("Betrag (€):"), 2, 0)
+        grid.addWidget(QLabel(tr('Betrag (€):')), 2, 0)
         self.amount_spin = QDoubleSpinBox()
         self.amount_spin.setRange(0, 1_000_000)
         self.amount_spin.setDecimals(2)
@@ -87,7 +88,7 @@ class TransactionDialog(QDialog):
         self.amount_spin.setValue(abs(existing["amount"]) if existing else 0)
         grid.addWidget(self.amount_spin, 2, 1)
 
-        grid.addWidget(QLabel("Datum:"), 3, 0)
+        grid.addWidget(QLabel(tr('Datum:')), 3, 0)
         self.date_edit = QDateEdit()
         self.date_edit.setCalendarPopup(True)
         self.date_edit.setDisplayFormat("dd.MM.yyyy")
@@ -95,19 +96,19 @@ class TransactionDialog(QDialog):
         self.date_edit.setDate(QDate(initial_date.year, initial_date.month, initial_date.day))
         grid.addWidget(self.date_edit, 3, 1)
 
-        grid.addWidget(QLabel("Beschreibung:"), 4, 0)
+        grid.addWidget(QLabel(tr('Beschreibung:')), 4, 0)
         self.description_edit = QLineEdit(existing["description"] if existing else "")
         grid.addWidget(self.description_edit, 4, 1)
 
         if not existing:
-            self.recurring_check = QCheckBox("Wiederkehrende Buchung")
+            self.recurring_check = QCheckBox(tr('Wiederkehrende Buchung'))
             self.recurring_check.toggled.connect(self._on_recurring_toggled)
             grid.addWidget(self.recurring_check, 5, 0, 1, 2)
 
             self.frequency_combo = QComboBox()
-            self.frequency_combo.addItem("Wöchentlich", "woechentlich")
-            self.frequency_combo.addItem("Monatlich", "monatlich")
-            self.frequency_combo.addItem("Jährlich", "jaehrlich")
+            self.frequency_combo.addItem(tr('Wöchentlich'), "woechentlich")
+            self.frequency_combo.addItem(tr('Monatlich'), "monatlich")
+            self.frequency_combo.addItem(tr('Jährlich'), "jaehrlich")
             self.frequency_combo.setCurrentIndex(1)
             self.frequency_combo.setEnabled(False)
             grid.addWidget(self.frequency_combo, 6, 0, 1, 2)
@@ -115,8 +116,7 @@ class TransactionDialog(QDialog):
             self.recurring_check = None
             if existing["recurring_template_id"] is not None:
                 note = QLabel(
-                    "Diese Buchung stammt aus einer wiederkehrenden Vorlage. "
-                    "Änderungen betreffen nur diese einzelne Buchung."
+                    tr('Diese Buchung stammt aus einer wiederkehrenden Vorlage. Änderungen betreffen nur diese einzelne Buchung.')
                 )
                 note.setWordWrap(True)
                 grid.addWidget(note, 5, 0, 1, 2)
@@ -146,6 +146,8 @@ class TransactionDialog(QDialog):
         amount = raw_amount if kind == "einnahme" else -raw_amount
         description = self.description_edit.text().strip()
         date_iso = _qdate_to_iso(self.date_edit.date())
+        # Für Hinweise nach dem Speichern (z. B. Budget-Warnung)
+        self.last_saved = {"category_id": category_id, "date": date_iso, "amount": amount}
 
         if self.existing:
             self.store.update_transaction(self.existing["id"], date_iso, amount,
@@ -167,60 +169,60 @@ class RecurringTemplateEditDialog(QDialog):
         super().__init__(parent)
         self.store = store
         self.template = template
-        self.setWindowTitle("Wiederkehrende Vorlage bearbeiten")
+        self.setWindowTitle(tr('Wiederkehrende Vorlage bearbeiten'))
         self.setMinimumWidth(380)
 
         layout = QVBoxLayout(self)
         grid = QGridLayout()
         layout.addLayout(grid)
 
-        grid.addWidget(QLabel("Art:"), 0, 0)
+        grid.addWidget(QLabel(tr('Art:')), 0, 0)
         self.kind_combo = QComboBox()
-        self.kind_combo.addItem("Ausgabe", "ausgabe")
-        self.kind_combo.addItem("Einnahme", "einnahme")
+        self.kind_combo.addItem(tr('Ausgabe'), "ausgabe")
+        self.kind_combo.addItem(tr('Einnahme'), "einnahme")
         self.kind_combo.setCurrentIndex(0 if template["kind"] == "ausgabe" else 1)
         self.kind_combo.currentIndexChanged.connect(
             lambda: self._reload_categories(preselect=template["category_id"]))
         grid.addWidget(self.kind_combo, 0, 1)
 
-        grid.addWidget(QLabel("Kategorie:"), 1, 0)
+        grid.addWidget(QLabel(tr('Kategorie:')), 1, 0)
         self.category_combo = QComboBox()
         grid.addWidget(self.category_combo, 1, 1)
         self._reload_categories(preselect=template["category_id"])
 
-        grid.addWidget(QLabel("Betrag (€):"), 2, 0)
+        grid.addWidget(QLabel(tr('Betrag (€):')), 2, 0)
         self.amount_spin = QDoubleSpinBox()
         self.amount_spin.setRange(0, 1_000_000)
         self.amount_spin.setDecimals(2)
         self.amount_spin.setValue(abs(template["amount"]))
         grid.addWidget(self.amount_spin, 2, 1)
 
-        grid.addWidget(QLabel("Beschreibung:"), 3, 0)
+        grid.addWidget(QLabel(tr('Beschreibung:')), 3, 0)
         self.description_edit = QLineEdit(template["description"] or "")
         grid.addWidget(self.description_edit, 3, 1)
 
-        grid.addWidget(QLabel("Häufigkeit:"), 4, 0)
+        grid.addWidget(QLabel(tr('Häufigkeit:')), 4, 0)
         self.frequency_combo = QComboBox()
-        self.frequency_combo.addItem("Wöchentlich", "woechentlich")
-        self.frequency_combo.addItem("Monatlich", "monatlich")
-        self.frequency_combo.addItem("Jährlich", "jaehrlich")
+        self.frequency_combo.addItem(tr('Wöchentlich'), "woechentlich")
+        self.frequency_combo.addItem(tr('Monatlich'), "monatlich")
+        self.frequency_combo.addItem(tr('Jährlich'), "jaehrlich")
         freq_index = {"woechentlich": 0, "monatlich": 1, "jaehrlich": 2}[template["frequency"]]
         self.frequency_combo.setCurrentIndex(freq_index)
         grid.addWidget(self.frequency_combo, 4, 1)
 
-        grid.addWidget(QLabel("Startdatum:"), 5, 0)
+        grid.addWidget(QLabel(tr('Startdatum:')), 5, 0)
         self.start_date_edit = QDateEdit()
         self.start_date_edit.setCalendarPopup(True)
         self.start_date_edit.setDisplayFormat("dd.MM.yyyy")
         self.start_date_edit.setDate(_iso_to_qdate(template["start_date"]))
         grid.addWidget(self.start_date_edit, 5, 1)
 
-        self.no_end_check = QCheckBox("Läuft unbegrenzt weiter")
+        self.no_end_check = QCheckBox(tr('Läuft unbegrenzt weiter'))
         self.no_end_check.setChecked(template["end_date"] is None)
         self.no_end_check.toggled.connect(lambda checked: self.end_date_edit.setEnabled(not checked))
         grid.addWidget(self.no_end_check, 6, 0, 1, 2)
 
-        grid.addWidget(QLabel("Enddatum:"), 7, 0)
+        grid.addWidget(QLabel(tr('Enddatum:')), 7, 0)
         self.end_date_edit = QDateEdit()
         self.end_date_edit.setCalendarPopup(True)
         self.end_date_edit.setDisplayFormat("dd.MM.yyyy")
@@ -232,17 +234,13 @@ class RecurringTemplateEditDialog(QDialog):
         grid.addWidget(self.end_date_edit, 7, 1)
 
         note = QLabel(
-            "Änderungen wirken standardmäßig nur auf zukünftige Buchungen (ab "
-            "heute) – bereits vergangene bleiben als historischer Stand "
-            "unverändert (z. B. sinnvoll bei einer Gehaltserhöhung: alte "
-            "Monate zeigen weiterhin den alten Betrag)."
+            tr('Änderungen wirken standardmäßig nur auf zukünftige Buchungen (ab heute) – bereits vergangene bleiben als historischer Stand unverändert (z. B. sinnvoll bei einer Gehaltserhöhung: alte Monate zeigen weiterhin den alten Betrag).')
         )
         note.setWordWrap(True)
         grid.addWidget(note, 8, 0, 1, 2)
 
         self.apply_to_past_check = QCheckBox(
-            "Änderungen auch auf bereits vergangene Buchungen anwenden "
-            "(überschreibt deren bisherige Werte rückwirkend)"
+            tr('Änderungen auch auf bereits vergangene Buchungen anwenden (überschreibt deren bisherige Werte rückwirkend)')
         )
         grid.addWidget(self.apply_to_past_check, 9, 0, 1, 2)
 
@@ -282,23 +280,20 @@ class RecurringTemplatesDialog(QDialog):
     def __init__(self, parent, store: FinanceStore):
         super().__init__(parent)
         self.store = store
-        self.setWindowTitle("Wiederkehrende Vorlagen")
+        self.setWindowTitle(tr('Wiederkehrende Vorlagen'))
         self.resize(650, 380)
 
         layout = QVBoxLayout(self)
 
         info = QLabel(
-            "Läuft eine Vorlage weiter, werden ihre Buchungen automatisch für "
-            "jeden Monat erzeugt, den du dir im Kalender ansiehst – unbegrenzt, "
-            "bis du sie hier löschst. Tipp: Doppelklick auf eine Vorlage öffnet "
-            "sie zum Bearbeiten."
+            tr('Läuft eine Vorlage weiter, werden ihre Buchungen automatisch für jeden Monat erzeugt, den du dir im Kalender ansiehst – unbegrenzt, bis du sie hier löschst. Tipp: Doppelklick auf eine Vorlage öffnet sie zum Bearbeiten.')
         )
         info.setWordWrap(True)
         layout.addWidget(info)
 
         self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(
-            ["Kategorie", "Betrag", "Häufigkeit", "Start", "Ende"])
+            [tr('Kategorie'), tr('Betrag'), tr('Häufigkeit'), tr('Start'), tr('Ende')])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -308,31 +303,31 @@ class RecurringTemplatesDialog(QDialog):
         btn_box = QHBoxLayout()
         layout.addLayout(btn_box)
 
-        edit_btn = QPushButton("Bearbeiten")
+        edit_btn = QPushButton(tr('Bearbeiten'))
         edit_btn.clicked.connect(self._on_edit)
         btn_box.addWidget(edit_btn)
 
-        del_btn = QPushButton("Löschen (inkl. künftiger Buchungen)")
+        del_btn = QPushButton(tr('Löschen (inkl. künftiger Buchungen)'))
         del_btn.clicked.connect(self._on_delete)
         btn_box.addWidget(del_btn)
         btn_box.addStretch()
 
-        close_btn = QPushButton("Schließen")
+        close_btn = QPushButton(tr('Schließen'))
         close_btn.clicked.connect(self.accept)
         btn_box.addWidget(close_btn)
 
         self._refresh()
 
     def _refresh(self):
-        freq_names = {"woechentlich": "Wöchentlich", "monatlich": "Monatlich",
-                      "jaehrlich": "Jährlich"}
+        freq_names = {"woechentlich": tr('Wöchentlich'), "monatlich": tr('Monatlich'),
+                      "jaehrlich": tr('Jährlich')}
         templates = self.store.list_recurring_templates()
         self.table.setRowCount(len(templates))
         for row, t in enumerate(templates):
             values = [
                 f"{t['icon']} {t['category_name']}", fmt_amount(t["amount"]),
                 freq_names.get(t["frequency"], t["frequency"]),
-                t["start_date"], t["end_date"] or "läuft weiter",
+                t["start_date"], t["end_date"] or tr('läuft weiter'),
             ]
             for col, value in enumerate(values):
                 item = QTableWidgetItem(value)
@@ -361,12 +356,11 @@ class RecurringTemplatesDialog(QDialog):
             return
 
         box = QMessageBox(
-            QMessageBox.Warning, "Wiederkehrende Vorlage löschen?",
-            "Zukünftige (heute oder später datierte) Buchungen dieser Vorlage "
-            "werden dabei immer entfernt.",
+            QMessageBox.Warning, tr('Wiederkehrende Vorlage löschen?'),
+            tr('Zukünftige (heute oder später datierte) Buchungen dieser Vorlage werden dabei immer entfernt.'),
             QMessageBox.Ok | QMessageBox.Cancel, parent=self,
         )
-        past_check = QCheckBox("Auch bereits vergangene Buchungen dieser Vorlage löschen")
+        past_check = QCheckBox(tr('Auch bereits vergangene Buchungen dieser Vorlage löschen'))
         box.setCheckBox(past_check)
         response = box.exec()
 
@@ -381,13 +375,13 @@ class BudgetDialog(QDialog):
         super().__init__(parent)
         self.store = store
         self.month = month
-        self.setWindowTitle("Budget setzen")
+        self.setWindowTitle(tr('Budget setzen'))
 
         layout = QVBoxLayout(self)
         grid = QGridLayout()
         layout.addLayout(grid)
 
-        grid.addWidget(QLabel("Kategorie:"), 0, 0)
+        grid.addWidget(QLabel(tr('Kategorie:')), 0, 0)
         self.category_combo = QComboBox()
         active_index = 0
         for i, cat in enumerate(store.list_categories(kind="ausgabe")):
@@ -398,7 +392,7 @@ class BudgetDialog(QDialog):
         grid.addWidget(self.category_combo, 0, 1)
 
         month_name = month.strftime("%B %Y")
-        grid.addWidget(QLabel(f"Monatsbudget für {month_name} (€):"), 1, 0)
+        grid.addWidget(QLabel(tr('Monatsbudget für {0} (€):').format(month_name)), 1, 0)
         self.amount_spin = QDoubleSpinBox()
         self.amount_spin.setRange(0, 1_000_000)
         self.amount_spin.setDecimals(2)
@@ -418,29 +412,29 @@ class BudgetDialog(QDialog):
 class GoalDialog(QDialog):
     def __init__(self, parent):
         super().__init__(parent)
-        self.setWindowTitle("Sparziel hinzufügen")
+        self.setWindowTitle(tr('Sparziel hinzufügen'))
 
         layout = QVBoxLayout(self)
         grid = QGridLayout()
         layout.addLayout(grid)
 
-        grid.addWidget(QLabel("Name:"), 0, 0)
+        grid.addWidget(QLabel(tr('Name:')), 0, 0)
         self.name_edit = QLineEdit()
         grid.addWidget(self.name_edit, 0, 1)
 
-        grid.addWidget(QLabel("Zielbetrag (€):"), 1, 0)
+        grid.addWidget(QLabel(tr('Zielbetrag (€):')), 1, 0)
         self.amount_spin = QDoubleSpinBox()
         self.amount_spin.setRange(1, 10_000_000)
         self.amount_spin.setDecimals(2)
         self.amount_spin.setValue(1000)
         grid.addWidget(self.amount_spin, 1, 1)
 
-        self.no_date_check = QCheckBox("Kein Zieldatum")
+        self.no_date_check = QCheckBox(tr('Kein Zieldatum'))
         self.no_date_check.setChecked(True)
         self.no_date_check.toggled.connect(lambda checked: self.date_edit.setEnabled(not checked))
         grid.addWidget(self.no_date_check, 2, 0, 1, 2)
 
-        grid.addWidget(QLabel("Zieldatum:"), 3, 0)
+        grid.addWidget(QLabel(tr('Zieldatum:')), 3, 0)
         self.date_edit = QDateEdit()
         self.date_edit.setCalendarPopup(True)
         self.date_edit.setDisplayFormat("dd.MM.yyyy")
@@ -464,26 +458,23 @@ class GoalDialog(QDialog):
 class ContributionDialog(QDialog):
     def __init__(self, parent, goal_name):
         super().__init__(parent)
-        self.setWindowTitle(f"Einzahlen: {goal_name}")
+        self.setWindowTitle(tr('Einzahlen: {0}').format(goal_name))
 
         layout = QVBoxLayout(self)
 
-        layout.addWidget(QLabel("Einzuzahlender Betrag (€):"))
+        layout.addWidget(QLabel(tr('Einzuzahlender Betrag (€):')))
         self.amount_spin = QDoubleSpinBox()
         self.amount_spin.setRange(0.01, 1_000_000)
         self.amount_spin.setDecimals(2)
         self.amount_spin.setValue(50)
         layout.addWidget(self.amount_spin)
 
-        self.book_check = QCheckBox("Als Buchung im Haushaltsbuch verbuchen (Kategorie „Sparbeitrag“)")
+        self.book_check = QCheckBox(tr('Als Buchung im Haushaltsbuch verbuchen (Kategorie „Sparbeitrag“)'))
         self.book_check.setChecked(True)
         layout.addWidget(self.book_check)
 
         hint = QLabel(
-            "Damit taucht die Einzahlung als Ausgabe im Kalender, in Budgets "
-            "und Auswertungen auf – so wie das Geld tatsächlich vom Konto "
-            "abgeht. Zum rein informativen Vormerken (z. B. externes Depot) "
-            "kannst du das Häkchen entfernen."
+            tr('Damit taucht die Einzahlung als Ausgabe im Kalender, in Budgets und Auswertungen auf – so wie das Geld tatsächlich vom Konto abgeht. Zum rein informativen Vormerken (z. B. externes Depot) kannst du das Häkchen entfernen.')
         )
         hint.setWordWrap(True)
         layout.addWidget(hint)
@@ -503,7 +494,7 @@ class ContributionDialog(QDialog):
 class CategoryEditDialog(QDialog):
     def __init__(self, parent, name="", icon="", edit_mode=False):
         super().__init__(parent)
-        self.setWindowTitle("Kategorie bearbeiten" if edit_mode else "Kategorie hinzufügen")
+        self.setWindowTitle(tr('Kategorie bearbeiten') if edit_mode else tr('Kategorie hinzufügen'))
         self.edit_mode = edit_mode
         self.setMinimumWidth(380)
 
@@ -511,13 +502,13 @@ class CategoryEditDialog(QDialog):
         grid = QGridLayout()
         layout.addLayout(grid)
 
-        grid.addWidget(QLabel("Icon:"), 0, 0)
+        grid.addWidget(QLabel(tr('Icon:')), 0, 0)
         self.icon_edit = QLineEdit(icon or "💶")
         self.icon_edit.setMaxLength(4)
         self.icon_edit.setFixedWidth(50)
         grid.addWidget(self.icon_edit, 0, 1)
 
-        grid.addWidget(QLabel("Icon auswählen:"), 1, 0)
+        grid.addWidget(QLabel(tr('Icon auswählen:')), 1, 0)
         picker = QWidget()
         picker_layout = QGridLayout(picker)
         picker_layout.setContentsMargins(0, 0, 0, 0)
@@ -529,15 +520,15 @@ class CategoryEditDialog(QDialog):
             picker_layout.addWidget(btn, i // 8, i % 8)
         grid.addWidget(picker, 1, 1)
 
-        grid.addWidget(QLabel("Name:"), 2, 0)
+        grid.addWidget(QLabel(tr('Name:')), 2, 0)
         self.name_edit = QLineEdit(name)
         grid.addWidget(self.name_edit, 2, 1)
 
         if not edit_mode:
-            grid.addWidget(QLabel("Art:"), 3, 0)
+            grid.addWidget(QLabel(tr('Art:')), 3, 0)
             self.kind_combo = QComboBox()
-            self.kind_combo.addItem("Ausgabe", "ausgabe")
-            self.kind_combo.addItem("Einnahme", "einnahme")
+            self.kind_combo.addItem(tr('Ausgabe'), "ausgabe")
+            self.kind_combo.addItem(tr('Einnahme'), "einnahme")
             grid.addWidget(self.kind_combo, 3, 1)
         else:
             self.kind_combo = None
@@ -562,13 +553,13 @@ class CategoryManagerDialog(QDialog):
     def __init__(self, parent, store: FinanceStore):
         super().__init__(parent)
         self.store = store
-        self.setWindowTitle("Kategorien verwalten")
+        self.setWindowTitle(tr('Kategorien verwalten'))
         self.resize(480, 400)
 
         layout = QVBoxLayout(self)
 
         self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["Icon", "Name", "Art"])
+        self.table.setHorizontalHeaderLabels([tr('Icon'), tr('Name'), tr('Art')])
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -577,20 +568,20 @@ class CategoryManagerDialog(QDialog):
         btn_box = QHBoxLayout()
         layout.addLayout(btn_box)
 
-        add_btn = QPushButton("Hinzufügen")
+        add_btn = QPushButton(tr('Hinzufügen'))
         add_btn.clicked.connect(self._on_add)
         btn_box.addWidget(add_btn)
 
-        edit_btn = QPushButton("Bearbeiten")
+        edit_btn = QPushButton(tr('Bearbeiten'))
         edit_btn.clicked.connect(self._on_edit)
         btn_box.addWidget(edit_btn)
 
-        del_btn = QPushButton("Löschen")
+        del_btn = QPushButton(tr('Löschen'))
         del_btn.clicked.connect(self._on_delete)
         btn_box.addWidget(del_btn)
         btn_box.addStretch()
 
-        close_btn = QPushButton("Schließen")
+        close_btn = QPushButton(tr('Schließen'))
         close_btn.clicked.connect(self.accept)
         btn_box.addWidget(close_btn)
 
@@ -605,7 +596,7 @@ class CategoryManagerDialog(QDialog):
             self.table.setItem(row, 0, icon_item)
             self.table.setItem(row, 1, QTableWidgetItem(c["name"]))
             self.table.setItem(row, 2, QTableWidgetItem(
-                "Einnahme" if c["kind"] == "einnahme" else "Ausgabe"))
+                tr('Einnahme') if c["kind"] == "einnahme" else tr('Ausgabe')))
 
     def _selected_category(self):
         row = self.table.currentRow()
@@ -642,12 +633,91 @@ class CategoryManagerDialog(QDialog):
         if not selected:
             return
         response = QMessageBox.warning(
-            self, "Kategorie löschen",
-            f'Kategorie "{selected["name"]}" wirklich löschen?\n\n'
-            "Achtung: Dabei werden auch ALLE Buchungen und wiederkehrenden "
-            "Vorlagen dieser Kategorie unwiderruflich gelöscht.",
+            self, tr('Kategorie löschen'),
+            tr('Kategorie "{0}" wirklich löschen?\n\nAchtung: Dabei werden auch ALLE Buchungen und wiederkehrenden Vorlagen dieser Kategorie unwiderruflich gelöscht.').format(selected["name"]),
             QMessageBox.Ok | QMessageBox.Cancel,
         )
         if response == QMessageBox.Ok:
             self.store.delete_category(selected["id"])
             self._refresh()
+
+
+class QuickTemplatesDialog(QDialog):
+    """Liste gespeicherter Schnellbuchungs-Vorlagen: per Doppelklick oder
+    "Jetzt buchen" wird daraus eine Buchung am gewählten Datum; Vorlagen lassen
+    sich löschen. (Neue Vorlagen entstehen über "Als Vorlage speichern" in der
+    Buchungsliste.)"""
+
+    def __init__(self, parent, store: FinanceStore, booking_date: datetime.date):
+        super().__init__(parent)
+        self.store = store
+        self.booking_date = booking_date
+        self.booked = []  # (category_id, date_iso, amount) der gebuchten Vorlagen
+        self.setWindowTitle(tr('Aus Vorlage buchen'))
+        self.setMinimumWidth(460)
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(tr('Buchungsdatum: {0}').format(booking_date.strftime('%d.%m.%Y'))))
+
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels([tr('Name'), tr('Kategorie'), tr('Betrag')])
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.verticalHeader().setVisible(False)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.table.itemDoubleClicked.connect(lambda _item: self._book())
+        layout.addWidget(self.table)
+
+        self.hint = QLabel()
+        self.hint.setWordWrap(True)
+        layout.addWidget(self.hint)
+
+        buttons = QHBoxLayout()
+        layout.addLayout(buttons)
+        book_btn = QPushButton(tr('Jetzt buchen'))
+        book_btn.clicked.connect(self._book)
+        buttons.addWidget(book_btn)
+        delete_btn = QPushButton(tr('Vorlage löschen'))
+        delete_btn.clicked.connect(self._delete)
+        buttons.addWidget(delete_btn)
+        buttons.addStretch()
+        close_btn = QPushButton(tr('Schließen'))
+        close_btn.clicked.connect(self.accept)
+        buttons.addWidget(close_btn)
+        self._reload()
+
+    def _reload(self):
+        templates = self.store.list_quick_templates()
+        self.table.setRowCount(len(templates))
+        for i, t in enumerate(templates):
+            name_item = QTableWidgetItem(t["name"])
+            name_item.setData(Qt.UserRole, t["id"])
+            self.table.setItem(i, 0, name_item)
+            self.table.setItem(i, 1, QTableWidgetItem(f"{t['icon']} {t['category_name']}"))
+            amount_item = QTableWidgetItem(fmt_amount(t["amount"]))
+            amount_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self.table.setItem(i, 2, amount_item)
+        self.hint.setText("" if templates else
+                          tr('Noch keine Vorlagen. Wähle in der Buchungsliste eine Buchung und klicke auf „Als Vorlage speichern“.'))
+
+    def _selected_id(self):
+        row = self.table.currentRow()
+        item = self.table.item(row, 0) if row >= 0 else None
+        return item.data(Qt.UserRole) if item else None
+
+    def _book(self):
+        template_id = self._selected_id()
+        if template_id is None:
+            return
+        template = next(t for t in self.store.list_quick_templates() if t["id"] == template_id)
+        self.store.book_quick_template(template_id, self.booking_date.isoformat())
+        self.booked.append({"category_id": template["category_id"],
+                            "date": self.booking_date.isoformat(),
+                            "amount": template["amount"]})
+        self.hint.setText(tr('„{0}“ gebucht ({1}).').format(template['name'], fmt_amount(template['amount'])))
+
+    def _delete(self):
+        template_id = self._selected_id()
+        if template_id is not None:
+            self.store.delete_quick_template(template_id)
+            self._reload()

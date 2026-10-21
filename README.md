@@ -74,6 +74,7 @@ fertige Pakete der Qt-Version, ganz ohne Python-Installation:
 | System | Datei |
 |---|---|
 | Linux | `Plutos-<Version>-x86_64.AppImage` (ausführbar machen, doppelklicken) |
+| Linux (GTK, nativ) | `Plutos-<Version>-linux-gtk.zip` – entpacken, `install.sh` ausführen (benötigt die GTK3-Pakete des Systems, bei Linux Mint schon vorhanden) |
 | macOS (Apple Silicon) | `Plutos-<Version>-macOS-arm64.dmg` |
 | Windows | `Plutos-<Version>-Setup.exe` oder `…-windows-portable.zip` |
 

@@ -9,6 +9,7 @@ Datums-Parser mehr nötig.
 import datetime
 
 from PySide6.QtWidgets import (
+    QCompleter,
     QDialog, QVBoxLayout, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
     QComboBox, QDoubleSpinBox, QDateEdit, QCheckBox, QPushButton,
     QDialogButtonBox, QTableWidget, QTableWidgetItem, QHeaderView,
@@ -16,7 +17,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, QDate
 
-from i18n import tr
+from i18n import tr, months
 from db import FinanceStore
 from charts import fmt_amount
 
@@ -100,10 +101,19 @@ class TransactionDialog(QDialog):
         self.description_edit = QLineEdit(existing["description"] if existing else "")
         grid.addWidget(self.description_edit, 4, 1)
 
+        grid.addWidget(QLabel(tr('Tags:')), 5, 0)
+        self.tags_edit = QLineEdit(
+            ", ".join(store.split_tags(existing["tags"])) if existing else "")
+        self.tags_edit.setPlaceholderText(tr('z. B. Urlaub, Geschenk (mit Komma trennen)'))
+        completer = QCompleter(store.list_tags(), self)
+        completer.setCaseSensitivity(Qt.CaseInsensitive)
+        self.tags_edit.setCompleter(completer)
+        grid.addWidget(self.tags_edit, 5, 1)
+
         if not existing:
             self.recurring_check = QCheckBox(tr('Wiederkehrende Buchung'))
             self.recurring_check.toggled.connect(self._on_recurring_toggled)
-            grid.addWidget(self.recurring_check, 5, 0, 1, 2)
+            grid.addWidget(self.recurring_check, 6, 0, 1, 2)
 
             self.frequency_combo = QComboBox()
             self.frequency_combo.addItem(tr('Wöchentlich'), "woechentlich")
@@ -111,7 +121,7 @@ class TransactionDialog(QDialog):
             self.frequency_combo.addItem(tr('Jährlich'), "jaehrlich")
             self.frequency_combo.setCurrentIndex(1)
             self.frequency_combo.setEnabled(False)
-            grid.addWidget(self.frequency_combo, 6, 0, 1, 2)
+            grid.addWidget(self.frequency_combo, 7, 0, 1, 2)
         else:
             self.recurring_check = None
             if existing["recurring_template_id"] is not None:
@@ -119,7 +129,7 @@ class TransactionDialog(QDialog):
                     tr('Diese Buchung stammt aus einer wiederkehrenden Vorlage. Änderungen betreffen nur diese einzelne Buchung.')
                 )
                 note.setWordWrap(True)
-                grid.addWidget(note, 5, 0, 1, 2)
+                grid.addWidget(note, 6, 0, 1, 2)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
@@ -138,6 +148,7 @@ class TransactionDialog(QDialog):
 
     def _on_recurring_toggled(self, active):
         self.frequency_combo.setEnabled(active)
+        self.tags_edit.setEnabled(not active)  # Vorlagen kennen noch keine Tags
 
     def save(self):
         kind = self.kind_combo.currentData()
@@ -151,13 +162,15 @@ class TransactionDialog(QDialog):
 
         if self.existing:
             self.store.update_transaction(self.existing["id"], date_iso, amount,
-                                           category_id, description)
+                                           category_id, description,
+                                           tags=self.tags_edit.text())
         elif self.recurring_check is not None and self.recurring_check.isChecked():
             frequency = self.frequency_combo.currentData()
             self.store.add_recurring_template(category_id, amount, description,
                                                frequency, date_iso)
         else:
-            self.store.add_transaction(date_iso, amount, category_id, description)
+            self.store.add_transaction(date_iso, amount, category_id, description,
+                                       tags=self.tags_edit.text())
 
 
 class RecurringTemplateEditDialog(QDialog):
@@ -376,6 +389,7 @@ class BudgetDialog(QDialog):
         self.store = store
         self.month = month
         self.setWindowTitle(tr('Budget setzen'))
+        self.setMinimumWidth(400)
 
         layout = QVBoxLayout(self)
         grid = QGridLayout()
@@ -391,17 +405,30 @@ class BudgetDialog(QDialog):
         self.category_combo.setCurrentIndex(active_index)
         grid.addWidget(self.category_combo, 0, 1)
 
-        month_name = month.strftime("%B %Y")
-        grid.addWidget(QLabel(tr('Monatsbudget für {0} (€):').format(month_name)), 1, 0)
+        grid.addWidget(QLabel(tr('Monatsbudget ab {0} (€):').format(
+            f"{months()[month.month - 1]} {month.year}")), 1, 0)
         self.amount_spin = QDoubleSpinBox()
         self.amount_spin.setRange(0, 1_000_000)
         self.amount_spin.setDecimals(2)
         grid.addWidget(self.amount_spin, 1, 1)
 
+        hint = QLabel(tr('Das Budget gilt ab diesem Monat und läuft danach automatisch weiter, bis du es änderst oder beendest. Frühere Monate bleiben unverändert.'))
+        hint.setWordWrap(True)
+        hint.setObjectName("muted")
+        layout.addWidget(hint)
+
+        self._limits = {r["category_id"]: r["limit_amount"]
+                        for r in store.budget_overview(month.strftime("%Y-%m"))}
+        self.category_combo.currentIndexChanged.connect(self._preload_amount)
+        self._preload_amount()
+
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    def _preload_amount(self, *_args):
+        self.amount_spin.setValue(self._limits.get(self.category_combo.currentData()) or 0)
 
     def save(self):
         category_id = self.category_combo.currentData()

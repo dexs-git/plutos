@@ -11,7 +11,8 @@ Ein kleiner GTK-Finanzplaner für Linux Mint mit:
 - **Wiederkehrende Einträge** (wöchentlich/monatlich/jährlich), die für
   JEDEN Monat, den du dir ansiehst, automatisch nachgeneriert werden –
   unbegrenzt, bis du die Vorlage löschst oder ein Enddatum setzt
-- **Budgets** pro Kategorie und Monat mit Fortschrittsbalken
+- **Budgets** pro Kategorie mit Fortschrittsbalken; sie laufen ab dem gesetzten Monat
+  automatisch weiter, bis man sie ändert oder beendet
 - **Sparziele** mit Zielbetrag, Zieldatum und Einzahlungen – wahlweise nur
   informativ oder als echte Buchung im Haushaltsbuch verbucht
 - **Finanzplanung**: echten Kontostand (Startguthaben + Buchungen seitdem)
@@ -154,9 +155,24 @@ in den neuen (`~/.local/share/plutos/`) um – du musst nichts selbst tun.
   alle ihre Buchungen und Vorlagen).
 
 ### Budgets
-- Gilt jeweils für den im Kalender (Buchungen-Tab) sichtbaren Monat.
-- **Budget setzen/ändern**: Kategorie + Betrag wählen. Der Fortschrittsbalken
-  zeigt, wie viel vom Budget bereits ausgegeben wurde.
+- Angezeigt wird der im Kalender (Buchungen-Tab) sichtbare Monat.
+- **Budget setzen/ändern**: Kategorie + Betrag wählen. Das Budget gilt ab diesem
+  Monat und **läuft automatisch weiter** (in der Liste mit ↺ markiert), bis du es
+  änderst oder beendest. Frühere Monate bleiben unverändert.
+- **Budget beenden**: stoppt das Budget der markierten Kategorie ab dem
+  angezeigten Monat.
+- Der Fortschrittsbalken zeigt, wie viel vom Budget bereits ausgegeben wurde.
+- **Auswertungen → „Budgets im Jahr“**: je Kategorie und Monat, um wie viel du
+  über (+) oder unter (−) dem Budget lagst, dazu wie oft und in welcher Summe
+  (nur abgeschlossene Monate).
+
+### Tags und Monatsabschluss
+- Beim Anlegen/Bearbeiten einer Buchung können **Tags** (z. B. „Urlaub, Geschenk“)
+  eingetragen werden. Die Suche findet sie (auch mit „#Urlaub“), Auswertungen →
+  „Tags“ summiert sie je Jahr oder über alle Jahre; im CSV sind sie in der Spalte
+  „Tags“. Wiederkehrende Vorlagen kennen noch keine Tags.
+- Auf der Übersichtsseite erscheint zum Monatswechsel ein **Monatsabschluss** für
+  den Vormonat; „Ausblenden“ blendet ihn aus.
 
 ### Sparziele
 - **Ziel hinzufügen**: Name, Zielbetrag, optionales Zieldatum. Neue Ziele

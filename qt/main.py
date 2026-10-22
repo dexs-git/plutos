@@ -285,6 +285,50 @@ class MainWindow(QMainWindow):
             row.addWidget(make_link_button(link_text, lambda: self._go_to(link_key)))
         lay.addLayout(row)
 
+    def _month_summary_card(self, sm):
+        """Kleine Rückschau auf den Vormonat – bleibt, bis man sie ausblendet."""
+        t = theme.current()
+        card, lay = make_card()
+        year, mon = int(sm["month"][:4]), int(sm["month"][5:7])
+        row = QHBoxLayout()
+        title = QLabel(tr('Monatsabschluss {0}').format(f"{months()[mon - 1]} {year}"))
+        title.setObjectName("cardTitle")
+        row.addWidget(title, 1)
+        row.addWidget(make_link_button(tr('Auswertungen'), lambda: self._go_to("stats")))
+        row.addWidget(make_link_button(tr('Ausblenden'), lambda: self._dismiss_month_summary(sm["month"])))
+        lay.addLayout(row)
+
+        saved = sm["saved"]
+        head = QLabel(tr('Gespart {0}').format(fmt_amount(saved)))
+        head.setStyleSheet(f"font-size: 20px; font-weight: 600; color: {t['positive'] if saved >= 0 else t['negative']};")
+        lay.addWidget(head)
+        lines = [tr('Einnahmen {0} · Ausgaben {1}').format(fmt_amount(sm["income"]), fmt_amount(sm["expense"]))]
+        if sm["saving_rate"] is not None:
+            lines[0] += " · " + tr('Sparquote {0:.0f} %').format(sm["saving_rate"] * 100)
+        if sm["expense_change"] is not None:
+            ch = sm["expense_change"] * 100
+            lines.append(tr('Ausgaben {0}{1:.0f} % gegenüber dem Vormonat').format("+" if ch > 0 else "−", abs(ch)))
+        top = sm["top_category"]
+        if top:
+            lines.append(tr('Größte Ausgabe: {0} {1} ({2}, {3:.0f} %)').format(
+                top["icon"], top["name"], fmt_amount(top["amount"]), top["share"] * 100))
+        if sm["budget_count"]:
+            text = tr('Budgets: {0} von {1} eingehalten').format(sm["budgets_ok"], sm["budget_count"])
+            if sm["budgets_over"]:
+                text += " – " + tr('drüber: {0}').format(", ".join(
+                    f"{b['icon']} {b['name']} (+{fmt_amount(b['over_by'])})" for b in sm["budgets_over"][:3]))
+            lines.append(text)
+        for text in lines:
+            label = QLabel(text)
+            label.setObjectName("kpiSub")
+            label.setWordWrap(True)
+            lay.addWidget(label)
+        return card
+
+    def _dismiss_month_summary(self, month):
+        self.store.dismiss_month_summary(month)
+        self._refresh_dashboard()
+
     def _refresh_dashboard(self):
         if not hasattr(self, "dashboard_scroll"):
             return
@@ -310,6 +354,11 @@ class MainWindow(QMainWindow):
         header.addStretch()
         grid.addLayout(header, 0, 0, 1, 6)
 
+        # --- Monatsabschluss (Vormonat, bis er ausgeblendet wird) -----------
+        summary = self.store.pending_month_summary()
+        if summary:
+            grid.addWidget(self._month_summary_card(summary), 1, 0, 1, 6)
+
         # --- Kennzahlen ---------------------------------------------------
         bd = d["balance"]
         if bd is None:
@@ -321,7 +370,7 @@ class MainWindow(QMainWindow):
                 tr('Girokonto {0} · Notgroschen {1}').format(fmt_amount(bd["giro"]), fmt_amount(bd["pocket"])))
         else:
             card1, _ = self._kpi_card(tr('Kontostand'), fmt_amount(bd["giro"]), tr('Berechnet bis heute'))
-        grid.addWidget(card1, 1, 0, 1, 2)
+        grid.addWidget(card1, 2, 0, 1, 2)
 
         saldo = d["income_sofar"] - d["expense_sofar"]
         sub = tr('Einnahmen {0} · Ausgaben {1}').format(fmt_amount(d["income_sofar"]), fmt_amount(d["expense_sofar"]))
@@ -331,7 +380,7 @@ class MainWindow(QMainWindow):
         card2, _ = self._kpi_card(tr('Saldo im {0}').format(months()[today.month - 1]),
                                   fmt_amount(saldo), sub,
                                   t["positive"] if saldo >= 0 else t["negative"])
-        grid.addWidget(card2, 1, 2, 1, 2)
+        grid.addWidget(card2, 2, 2, 1, 2)
 
         emergency = next((g for g in d["goals"] if g["name"] == "Notgroschen"), None)
         if emergency and emergency["target"] > 0:
@@ -346,7 +395,7 @@ class MainWindow(QMainWindow):
             lay3.insertWidget(lay3.count() - 1,
                               make_link_button(tr('In der Finanzplanung einrichten'),
                                                lambda: self._go_to("planning")))
-        grid.addWidget(card3, 1, 4, 1, 2)
+        grid.addWidget(card3, 2, 4, 1, 2)
 
         # --- Ausgabentempo -----------------------------------------------
         pace, pl = make_card()
@@ -383,7 +432,7 @@ class MainWindow(QMainWindow):
             hint.setObjectName("kpiSub")
             hint.setWordWrap(True)
             pl.addWidget(hint)
-        grid.addWidget(pace, 2, 0, 1, 6)
+        grid.addWidget(pace, 3, 0, 1, 6)
 
         # --- Budgets ------------------------------------------------------
         bcard, bl = make_card()
@@ -400,7 +449,7 @@ class MainWindow(QMainWindow):
             bl.addWidget(empty)
             bl.addWidget(make_link_button(tr('Budget setzen'), lambda: self._go_to("budgets")))
         bl.addStretch()
-        grid.addWidget(bcard, 3, 0, 1, 3)
+        grid.addWidget(bcard, 4, 0, 1, 3)
 
         # --- Sparziele ----------------------------------------------------
         gcard, gl = make_card()
@@ -417,7 +466,7 @@ class MainWindow(QMainWindow):
             gl.addWidget(empty)
             gl.addWidget(make_link_button(tr('Sparziel anlegen'), lambda: self._go_to("goals")))
         gl.addStretch()
-        grid.addWidget(gcard, 3, 3, 1, 3)
+        grid.addWidget(gcard, 4, 3, 1, 3)
 
         # --- Verlauf ------------------------------------------------------
         tcard, tl = make_card()
@@ -430,7 +479,7 @@ class MainWindow(QMainWindow):
         trend.set_rows([(months_short()[int(r["month"][5:]) - 1], r["income"], r["expense"],
                          r["month"] == d["month"]) for r in d["trend"]])
         tl.addWidget(trend, 1)
-        grid.addWidget(tcard, 4, 0, 1, 3)
+        grid.addWidget(tcard, 5, 0, 1, 3)
 
         # --- Letzte Buchungen ---------------------------------------------
         rcard, rl = make_card()
@@ -459,9 +508,9 @@ class MainWindow(QMainWindow):
             rl.addWidget(empty)
             rl.addWidget(make_link_button(tr('Buchung hinzufügen'), lambda: self._go_to("bookings")))
         rl.addStretch()
-        grid.addWidget(rcard, 4, 3, 1, 3)
+        grid.addWidget(rcard, 5, 3, 1, 3)
 
-        grid.setRowStretch(5, 1)
+        grid.setRowStretch(6, 1)
         self.dashboard_scroll.setWidget(content)
 
     # =====================================================================
@@ -773,9 +822,15 @@ class MainWindow(QMainWindow):
             amount_item = QTableWidgetItem(fmt_amount(r["amount"]))
             amount_item.setForeground(QColor(30, 140, 61) if r["amount"] >= 0 else QColor(191, 56, 38))
             self.day_table.setItem(row_idx, 2, amount_item)
-            self.day_table.setItem(row_idx, 3, QTableWidgetItem(r["description"] or ""))
+            self.day_table.setItem(row_idx, 3, QTableWidgetItem(self._description_with_tags(r)))
             self.day_table.setItem(row_idx, 4, QTableWidgetItem(
                 "✓" if r["recurring_template_id"] is not None else ""))
+
+    def _description_with_tags(self, r):
+        """Beschreibung, gefolgt von den Tags der Buchung als „#Tag“."""
+        tags = " ".join(f"#{t}" for t in self.store.split_tags(r["tags"]))
+        text = r["description"] or ""
+        return f"{text}  {tags}".strip() if tags else text
 
     def _selected_transaction_id(self):
         row = self.day_table.currentRow()
@@ -975,7 +1030,7 @@ class MainWindow(QMainWindow):
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
-        info = QLabel(tr('Budgets gelten für den im Buchungen-Tab im Kalender sichtbaren Monat.'))
+        info = QLabel(tr('Budgets gelten für den im Buchungen-Tab im Kalender sichtbaren Monat. Ein Budget läuft ab dem Monat, für den du es setzt, automatisch weiter (↺ = übernommen), bis du es änderst oder beendest.'))
         info.setWordWrap(True)
         layout.addWidget(info)
 
@@ -998,6 +1053,10 @@ class MainWindow(QMainWindow):
         set_btn = QPushButton(tr('Budget setzen/ändern'))
         set_btn.clicked.connect(self._on_set_budget)
         btn_box.addWidget(set_btn)
+        end_btn = QPushButton(tr('Budget beenden'))
+        end_btn.setToolTip(tr('Beendet das Budget der markierten Kategorie ab dem angezeigten Monat; frühere Monate bleiben unverändert.'))
+        end_btn.clicked.connect(self._on_end_budget)
+        btn_box.addWidget(end_btn)
         refresh_btn = QPushButton(tr('Aktualisieren'))
         refresh_btn.clicked.connect(self._refresh_budgets_tab)
         btn_box.addWidget(refresh_btn)
@@ -1026,7 +1085,12 @@ class MainWindow(QMainWindow):
             else:
                 remaining = limit_amount - spent
                 percent = int(min(100, max(0, (spent / limit_amount) * 100))) if limit_amount else 0
-                self.budget_table.setItem(i, 1, QTableWidgetItem(fmt_amount(limit_amount)))
+                limit_item = QTableWidgetItem(
+                    fmt_amount(limit_amount) + ("  ↺" if r["inherited_from"] else ""))
+                if r["inherited_from"]:
+                    y, m = r["inherited_from"].split("-")
+                    limit_item.setToolTip(tr('Übernommen aus {0}').format(f"{months()[int(m) - 1]} {y}"))
+                self.budget_table.setItem(i, 1, limit_item)
                 self.budget_table.setItem(i, 2, QTableWidgetItem(fmt_amount(spent)))
                 self.budget_table.setItem(i, 3, QTableWidgetItem(fmt_amount(remaining)))
                 level = self.store.budget_level(spent, limit_amount)
@@ -1047,6 +1111,19 @@ class MainWindow(QMainWindow):
         if dialog.exec() == BudgetDialog.Accepted:
             dialog.save()
             self._refresh_budgets_tab()
+
+    def _on_end_budget(self):
+        row = self.budget_table.currentRow()
+        if row < 0:
+            QMessageBox.information(self, tr('Budget beenden'), tr('Bitte zuerst eine Kategorie markieren.'))
+            return
+        category_id = self.budget_table.item(row, 0).data(Qt.UserRole)
+        month = self._selected_calendar_month()
+        if self.store.budget_status(category_id, month.strftime("%Y-%m")) is None:
+            QMessageBox.information(self, tr('Budget beenden'), tr('Für diese Kategorie gilt in diesem Monat kein Budget.'))
+            return
+        self.store.end_budget(category_id, month.strftime("%Y-%m"))
+        self._refresh_budgets_tab()
 
     # =====================================================================
     # Tab 3: Sparziele
@@ -1896,6 +1973,8 @@ class MainWindow(QMainWindow):
         self.stats_view_combo.addItem(tr('Geldfluss (Sankey-Diagramm)'), "fluss")
         self.stats_view_combo.addItem(tr('Kategorien vergleichen'), "vergleich")
         self.stats_view_combo.addItem(tr('Jahresübersicht (mit Vorjahr)'), "jahresvergleich")
+        self.stats_view_combo.addItem(tr('Budgets im Jahr'), "budgetjahr")
+        self.stats_view_combo.addItem(tr('Tags'), "tags")
         self.stats_view_combo.currentIndexChanged.connect(self._on_stats_view_changed)
         switcher_box.addWidget(self.stats_view_combo)
         switcher_box.addStretch()
@@ -1908,6 +1987,8 @@ class MainWindow(QMainWindow):
         self.stats_stack.addWidget(self._build_sankey_section())
         self.stats_stack.addWidget(self._build_compare_section())
         self.stats_stack.addWidget(self._build_year_compare_section())
+        self.stats_stack.addWidget(self._build_budget_year_section())
+        self.stats_stack.addWidget(self._build_tags_section())
 
         self._refresh_stats()
         return root
@@ -2136,6 +2217,151 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.yearcmp_summary)
         return section
 
+    def _year_nav(self, layout, label_attr):
+        nav = QHBoxLayout()
+        layout.addLayout(nav)
+        prev_btn = QPushButton("◀")
+        prev_btn.clicked.connect(lambda: self._shift_yearcmp(-1))
+        nav.addWidget(prev_btn)
+        label = QLabel()
+        setattr(self, label_attr, label)
+        nav.addWidget(label)
+        next_btn = QPushButton("▶")
+        next_btn.clicked.connect(lambda: self._shift_yearcmp(1))
+        nav.addWidget(next_btn)
+        nav.addStretch()
+        return nav
+
+    def _build_budget_year_section(self):
+        section = QWidget()
+        layout = QVBoxLayout(section)
+        self._year_nav(layout, "budgetyear_label")
+        headers = ([tr('Kategorie')] + list(months_short())
+                   + [tr('× drüber'), tr('× drunter'), tr('Summe drüber'), tr('Summe drunter'), tr('Saldo')])
+        self.budgetyear_table = QTableWidget(0, len(headers))
+        self.budgetyear_table.setHorizontalHeaderLabels(headers)
+        header = self.budgetyear_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        for col in range(1, len(headers)):
+            header.setSectionResizeMode(col, QHeaderView.ResizeToContents)
+        self.budgetyear_table.verticalHeader().setVisible(False)
+        self.budgetyear_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.budgetyear_table.setSelectionMode(QAbstractItemView.NoSelection)
+        layout.addWidget(self.budgetyear_table)
+        self.budgetyear_summary = QLabel()
+        self.budgetyear_summary.setWordWrap(True)
+        layout.addWidget(self.budgetyear_summary)
+        return section
+
+    def _refresh_budget_year(self):
+        year = self.stats_month.year
+        self.budgetyear_label.setText(str(year))
+        data = self.store.budget_year_summary(year)
+        tk = theme.current()
+        table = self.budgetyear_table
+        rows = data["rows"]
+        table.setRowCount(len(rows) + (1 if rows else 0))
+
+        def put(r, c, text, color=None, bold=False, align=Qt.AlignCenter, tooltip=None, italic=False, tint=None):
+            item = QTableWidgetItem(text)
+            item.setTextAlignment(align | Qt.AlignVCenter)
+            if color:
+                item.setForeground(QColor(color))
+            if tint:
+                bg = QColor(tint)
+                bg.setAlpha(45)
+                item.setBackground(bg)
+            if bold or italic:
+                f = item.font()
+                f.setBold(bold)
+                f.setItalic(italic)
+                item.setFont(f)
+            if tooltip:
+                item.setToolTip(tooltip)
+            table.setItem(r, c, item)
+
+        def signed(value):
+            return f"{'+' if value > 0.005 else ('−' if value < -0.005 else '±')}{abs(value):,.0f}".replace(",", ".")
+
+        for i, row in enumerate(rows):
+            put(i, 0, f"{row['icon']} {row['category_name']}", align=Qt.AlignLeft)
+            for m, cell in enumerate(row["cells"]):
+                if cell is None:
+                    put(i, 1 + m, "")
+                    continue
+                over = cell["diff"] > 0.005
+                tip = tr('Budget {0}, ausgegeben {1}').format(fmt_amount(cell["limit"]), fmt_amount(cell["spent"]))
+                if not cell["complete"]:
+                    tip += " – " + tr('Monat läuft noch, zählt noch nicht mit')
+                put(i, 1 + m, signed(cell["diff"]),
+                    color=tk["negative"] if over else tk["positive"],
+                    tint=(tk["negative"] if over else tk["positive"]) if cell["complete"] else None,
+                    tooltip=tip, italic=not cell["complete"])
+            put(i, 13, str(row["months_over"]), color=tk["negative"] if row["months_over"] else None)
+            put(i, 14, str(row["months_under"]))
+            put(i, 15, fmt_amount(row["over_sum"]) if row["over_sum"] else "–", align=Qt.AlignRight)
+            put(i, 16, fmt_amount(row["under_sum"]) if row["under_sum"] else "–", align=Qt.AlignRight)
+            put(i, 17, ("+" if row["net"] > 0.005 else "") + fmt_amount(row["net"]), align=Qt.AlignRight,
+                color=tk["negative"] if row["net"] > 0.005 else tk["positive"], bold=True)
+        if rows:
+            t = data["totals"]
+            last = len(rows)
+            put(last, 0, tr('Gesamt'), bold=True, align=Qt.AlignLeft)
+            for c in range(1, 13):
+                put(last, c, "")
+            put(last, 13, str(t["months_over"]), bold=True)
+            put(last, 14, str(t["months_under"]), bold=True)
+            put(last, 15, fmt_amount(t["over_sum"]), bold=True, align=Qt.AlignRight)
+            put(last, 16, fmt_amount(t["under_sum"]), bold=True, align=Qt.AlignRight)
+            put(last, 17, ("+" if t["net"] > 0.005 else "") + fmt_amount(t["net"]), bold=True, align=Qt.AlignRight,
+                color=tk["negative"] if t["net"] > 0.005 else tk["positive"])
+            self.budgetyear_summary.setText(
+                tr('Pro Monat ist angegeben, wie viel Euro du über (+) oder unter (−) dem Budget lagst. Gezählt werden nur abgeschlossene Monate mit geltendem Budget; der laufende Monat ist kursiv und zählt noch nicht mit. „Saldo“ positiv = insgesamt mehr ausgegeben als budgetiert.'))
+        else:
+            self.budgetyear_summary.setText(tr('Für dieses Jahr gibt es noch keine Budgets. Lege sie im Tab „Budgets“ an.'))
+
+    def _build_tags_section(self):
+        section = QWidget()
+        layout = QVBoxLayout(section)
+        nav = self._year_nav(layout, "tags_label")
+        self.tags_all_check = QCheckBox(tr('Alle Jahre'))
+        self.tags_all_check.toggled.connect(lambda _c: self._refresh_stats())
+        nav.insertWidget(nav.count() - 1, self.tags_all_check)
+        headers = [tr('Tag'), tr('Buchungen'), tr('Ausgaben'), tr('Einnahmen'), tr('Saldo')]
+        self.tags_table = QTableWidget(0, len(headers))
+        self.tags_table.setHorizontalHeaderLabels(headers)
+        self.tags_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        for col in range(1, 5):
+            self.tags_table.horizontalHeader().setSectionResizeMode(col, QHeaderView.ResizeToContents)
+        self.tags_table.verticalHeader().setVisible(False)
+        self.tags_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tags_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        layout.addWidget(self.tags_table)
+        self.tags_hint = QLabel()
+        self.tags_hint.setWordWrap(True)
+        layout.addWidget(self.tags_hint)
+        return section
+
+    def _refresh_tags(self):
+        all_years = self.tags_all_check.isChecked()
+        year = None if all_years else self.stats_month.year
+        self.tags_label.setText(tr('alle Jahre') if all_years else str(year))
+        rows = self.store.tag_summary(year)
+        tk = theme.current()
+        self.tags_table.setRowCount(len(rows))
+        for i, e in enumerate(rows):
+            saldo = e["income"] - e["expense"]
+            cells = [f"#{e['tag']}", str(e["count"]), fmt_amount(e["expense"]),
+                     fmt_amount(e["income"]), fmt_amount(saldo)]
+            for c, text in enumerate(cells):
+                item = QTableWidgetItem(text)
+                if c:
+                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                if c == 4:
+                    item.setForeground(QColor(tk["positive"] if saldo >= 0 else tk["negative"]))
+                self.tags_table.setItem(i, c, item)
+        self.tags_hint.setText("" if rows else tr('Noch keine Buchungen mit Tags. Beim Anlegen oder Bearbeiten einer Buchung kannst du Tags wie „Urlaub“ eintragen; unabhängig von den Kategorien siehst du hier, was sie insgesamt gekostet haben.'))
+
     def _on_yearcmp_mode_changed(self, index):
         self.yearcmp_stack.setCurrentIndex(index)
         self._refresh_stats()
@@ -2224,6 +2450,8 @@ class MainWindow(QMainWindow):
         self.sankey_widget.set_data(left_nodes, right_nodes, max(total_income, total_expense))
         self._refresh_compare(month_str)
         self._refresh_year_compare()
+        self._refresh_budget_year()
+        self._refresh_tags()
 
     # =====================================================================
     # Tab: Suche (alle Buchungen filtern)
@@ -2371,7 +2599,7 @@ class MainWindow(QMainWindow):
             d = datetime.date.fromisoformat(r["date"])
             cells = [d.strftime("%d.%m.%Y"), f"{r['icon']} {r['category_name']}",
                      tr('Einnahme') if r["kind"] == "einnahme" else tr('Ausgabe'),
-                     fmt_amount(r["amount"]), r["description"] or ""]
+                     fmt_amount(r["amount"]), self._description_with_tags(r)]
             for col, text in enumerate(cells):
                 item = QTableWidgetItem(text)
                 if col == 0:

@@ -316,6 +316,47 @@ class MainWindow(Gtk.Window):
             row.pack_end(make_link_button(link_text, lambda: self._go_to(link_key)), False, False, 0)
         inner.pack_start(row, False, False, 0)
 
+    def _month_summary_card(self, sm):
+        """Kleine Rückschau auf den Vormonat – bleibt, bis man sie ausblendet."""
+        t = theme.current()
+        card, lay = make_card()
+        year, mon = int(sm["month"][:4]), int(sm["month"][5:7])
+        row = Gtk.Box()
+        row.pack_start(theme.make_label(
+            tr('Monatsabschluss {0}').format(f"{months()[mon - 1]} {year}"), "card-title"), True, True, 0)
+        row.pack_end(make_link_button(tr('Ausblenden'), lambda: self._dismiss_month_summary(sm["month"])), False, False, 0)
+        row.pack_end(make_link_button(tr('Auswertungen'), lambda: self._go_to("stats")), False, False, 0)
+        lay.pack_start(row, False, False, 0)
+
+        saved = sm["saved"]
+        head = theme.make_label("", "pace-amount")
+        head.set_markup(f'<span foreground="{t["positive"] if saved >= 0 else t["negative"]}" size="x-large"><b>'
+                        f'{GLib.markup_escape_text(tr("Gespart {0}").format(fmt_amount(saved)))}</b></span>')
+        lay.pack_start(head, False, False, 0)
+        lines = [tr('Einnahmen {0} · Ausgaben {1}').format(fmt_amount(sm["income"]), fmt_amount(sm["expense"]))]
+        if sm["saving_rate"] is not None:
+            lines[0] += " · " + tr('Sparquote {0:.0f} %').format(sm["saving_rate"] * 100)
+        if sm["expense_change"] is not None:
+            ch = sm["expense_change"] * 100
+            lines.append(tr('Ausgaben {0}{1:.0f} % gegenüber dem Vormonat').format("+" if ch > 0 else "−", abs(ch)))
+        top = sm["top_category"]
+        if top:
+            lines.append(tr('Größte Ausgabe: {0} {1} ({2}, {3:.0f} %)').format(
+                top["icon"], top["name"], fmt_amount(top["amount"]), top["share"] * 100))
+        if sm["budget_count"]:
+            text = tr('Budgets: {0} von {1} eingehalten').format(sm["budgets_ok"], sm["budget_count"])
+            if sm["budgets_over"]:
+                text += " – " + tr('drüber: {0}').format(", ".join(
+                    f"{b['icon']} {b['name']} (+{fmt_amount(b['over_by'])})" for b in sm["budgets_over"][:3]))
+            lines.append(text)
+        for text in lines:
+            lay.pack_start(theme.make_label(text, "kpi-sub", wrap=True), False, False, 0)
+        return card
+
+    def _dismiss_month_summary(self, month):
+        self.store.dismiss_month_summary(month)
+        self._refresh_dashboard()
+
     def _refresh_dashboard(self):
         if not hasattr(self, "dashboard_holder"):
             return
@@ -340,6 +381,11 @@ class MainWindow(Gtk.Window):
         header.pack_start(month, False, False, 0)
         grid.attach(header, 0, 0, 6, 1)
 
+        # --- Monatsabschluss (Vormonat, bis er ausgeblendet wird) -----------
+        summary = self.store.pending_month_summary()
+        if summary:
+            grid.attach(self._month_summary_card(summary), 0, 1, 6, 1)
+
         # --- Kennzahlen ---------------------------------------------------
         bd = d["balance"]
         if bd is None:
@@ -351,7 +397,7 @@ class MainWindow(Gtk.Window):
                 tr('Girokonto {0} · Notgroschen {1}').format(fmt_amount(bd["giro"]), fmt_amount(bd["pocket"])))
         else:
             card1, _ = self._kpi_card(tr('Kontostand'), fmt_amount(bd["giro"]), tr('Berechnet bis heute'))
-        grid.attach(card1, 0, 1, 2, 1)
+        grid.attach(card1, 0, 2, 2, 1)
 
         saldo = d["income_sofar"] - d["expense_sofar"]
         sub = tr('Einnahmen {0} · Ausgaben {1}').format(fmt_amount(d["income_sofar"]), fmt_amount(d["expense_sofar"]))
@@ -360,7 +406,7 @@ class MainWindow(Gtk.Window):
                 fmt_amount(d["expense_planned"] - d["expense_sofar"]))
         card2, _ = self._kpi_card(tr('Saldo im {0}').format(months()[today.month - 1]),
                                   fmt_amount(saldo), sub, "positive" if saldo >= 0 else "negative")
-        grid.attach(card2, 2, 1, 2, 1)
+        grid.attach(card2, 2, 2, 2, 1)
 
         emergency = next((g for g in d["goals"] if g["name"] == "Notgroschen"), None)
         if emergency and emergency["target"] > 0:
@@ -374,7 +420,7 @@ class MainWindow(Gtk.Window):
             card3, inner3 = self._kpi_card(tr('Notgroschen'), "–", tr('Noch nicht eingerichtet'))
             inner3.pack_start(make_link_button(tr('In der Finanzplanung einrichten'),
                                                lambda: self._go_to("planning")), False, False, 0)
-        grid.attach(card3, 4, 1, 2, 1)
+        grid.attach(card3, 4, 2, 2, 1)
 
         # --- Ausgabentempo ------------------------------------------------
         pace, pl = make_card()
@@ -408,7 +454,7 @@ class MainWindow(Gtk.Window):
             pl.pack_start(theme.make_label(
                 tr('Sobald Budgets gesetzt sind oder Buchungen aus Vormonaten vorliegen, zeigt Plutos hier, ob du im Rahmen bleibst.'),
                 "kpi-sub", wrap=True), False, False, 0)
-        grid.attach(pace, 0, 2, 6, 1)
+        grid.attach(pace, 0, 3, 6, 1)
 
         # --- Budgets ------------------------------------------------------
         bcard, bl = make_card(spacing=8)
@@ -422,7 +468,7 @@ class MainWindow(Gtk.Window):
         else:
             bl.pack_start(theme.make_label(tr('Noch keine Budgets für diesen Monat.'), "kpi-sub"), False, False, 0)
             bl.pack_start(make_link_button(tr('Budget setzen'), lambda: self._go_to("budgets")), False, False, 0)
-        grid.attach(bcard, 0, 3, 3, 1)
+        grid.attach(bcard, 0, 4, 3, 1)
 
         # --- Sparziele ----------------------------------------------------
         gcard, gl = make_card(spacing=8)
@@ -436,7 +482,7 @@ class MainWindow(Gtk.Window):
         else:
             gl.pack_start(theme.make_label(tr('Noch keine Sparziele angelegt.'), "kpi-sub"), False, False, 0)
             gl.pack_start(make_link_button(tr('Sparziel anlegen'), lambda: self._go_to("goals")), False, False, 0)
-        grid.attach(gcard, 3, 3, 3, 1)
+        grid.attach(gcard, 3, 4, 3, 1)
 
         # --- Verlauf ------------------------------------------------------
         tcard, tl = make_card()
@@ -449,7 +495,7 @@ class MainWindow(Gtk.Window):
         trend.set_rows([(months_short()[int(r["month"][5:]) - 1], r["income"], r["expense"],
                          r["month"] == d["month"]) for r in d["trend"]])
         tl.pack_start(trend, True, True, 0)
-        grid.attach(tcard, 0, 4, 3, 1)
+        grid.attach(tcard, 0, 5, 3, 1)
 
         # --- Letzte Buchungen ---------------------------------------------
         rcard, rl = make_card(spacing=6)
@@ -473,7 +519,7 @@ class MainWindow(Gtk.Window):
         else:
             rl.pack_start(theme.make_label(tr('Noch keine Buchungen.'), "kpi-sub"), False, False, 0)
             rl.pack_start(make_link_button(tr('Buchung hinzufügen'), lambda: self._go_to("bookings")), False, False, 0)
-        grid.attach(rcard, 3, 4, 3, 1)
+        grid.attach(rcard, 3, 5, 3, 1)
         self.dashboard_holder.show_all()
 
 # =====================================================================
@@ -2469,6 +2515,12 @@ class MainWindow(Gtk.Window):
         )
 
 
+    def _description_with_tags(self, r):
+        """Beschreibung, gefolgt von den Tags der Buchung als „#Tag“."""
+        tags = " ".join(f"#{t}" for t in self.store.split_tags(r["tags"]))
+        text = r["description"] or ""
+        return f"{text}  {tags}".strip() if tags else text
+
     def _refresh_day_list(self):
 
         weekday_names = weekdays()
@@ -2512,7 +2564,7 @@ class MainWindow(Gtk.Window):
                             else tr('Ausgabe')
                         ),
                         r["amount"],
-                        r["description"] or "",
+                        self._description_with_tags(r),
                         r["recurring_template_id"] is not None,
                     ]
                 )
@@ -2830,7 +2882,9 @@ class MainWindow(Gtk.Window):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         box.set_border_width(10)
 
-        info = Gtk.Label(label=tr('Budgets gelten für den im Buchungen-Tab im Kalender sichtbaren Monat.'), xalign=0)
+        info = Gtk.Label(label=tr('Budgets gelten für den im Buchungen-Tab im Kalender sichtbaren Monat. Ein Budget läuft ab dem Monat, für den du es setzt, automatisch weiter (↺ = übernommen), bis du es änderst oder beendest.'), xalign=0)
+        info.set_line_wrap(True)
+        info.set_max_width_chars(10)
         box.pack_start(info, False, False, 0)
 
         scroller = Gtk.ScrolledWindow()
@@ -2864,6 +2918,11 @@ class MainWindow(Gtk.Window):
         set_btn.connect("clicked", self._on_set_budget)
         btn_box.pack_start(set_btn, False, False, 0)
 
+        end_btn = Gtk.Button(label=tr('Budget beenden'))
+        end_btn.set_tooltip_text(tr('Beendet das Budget der markierten Kategorie ab dem angezeigten Monat; frühere Monate bleiben unverändert.'))
+        end_btn.connect("clicked", self._on_end_budget)
+        btn_box.pack_start(end_btn, False, False, 0)
+
         refresh_btn = Gtk.Button(label=tr('Aktualisieren'))
         refresh_btn.connect("clicked", lambda w: self._refresh_budgets_tab())
         btn_box.pack_start(refresh_btn, False, False, 0)
@@ -2891,7 +2950,8 @@ class MainWindow(Gtk.Window):
                 percent = spent / limit_amount * 100 if limit_amount else 0
                 marker = {"warn": "⚠ ", "over": "⛔ "}.get(level, "")
                 self.budget_store.append([
-                    r["category_id"], label, fmt_amount(limit_amount),
+                    r["category_id"], label,
+                    fmt_amount(limit_amount) + ("  ↺" if r["inherited_from"] else ""),
                     fmt_amount(spent), fmt_amount(remaining), fraction,
                     color or theme.current()["text"], True, f"{marker}{percent:.0f} %",
                 ])
@@ -2906,6 +2966,21 @@ class MainWindow(Gtk.Window):
         if dialog.run() == Gtk.ResponseType.OK:
             dialog.save()
         dialog.destroy()
+        self._refresh_budgets_tab()
+
+    def _on_end_budget(self, widget):
+        model, tree_iter = self.budget_view.get_selection().get_selected()
+        if not tree_iter:
+            _run_message_dialog(self, Gtk.MessageType.INFO, Gtk.ButtonsType.OK,
+                                tr('Bitte zuerst eine Kategorie markieren.'))
+            return
+        category_id = model.get_value(tree_iter, 0)
+        month_str = self._selected_calendar_month().strftime("%Y-%m")
+        if self.store.budget_status(category_id, month_str) is None:
+            _run_message_dialog(self, Gtk.MessageType.INFO, Gtk.ButtonsType.OK,
+                                tr('Für diese Kategorie gilt in diesem Monat kein Budget.'))
+            return
+        self.store.end_budget(category_id, month_str)
         self._refresh_budgets_tab()
 
     # =====================================================================
@@ -3955,6 +4030,8 @@ class MainWindow(Gtk.Window):
         self.stats_view_combo.append("fluss", tr('Geldfluss (Sankey-Diagramm)'))
         self.stats_view_combo.append("vergleich", tr('Kategorien vergleichen'))
         self.stats_view_combo.append("jahresvergleich", tr('Jahresübersicht (mit Vorjahr)'))
+        self.stats_view_combo.append("budgetjahr", tr('Budgets im Jahr'))
+        self.stats_view_combo.append("tags", tr('Tags'))
         self.stats_view_combo.set_active_id("kategorien")
         self.stats_view_combo.connect("changed", self._on_stats_view_changed)
         switcher_box.pack_start(self.stats_view_combo, False, False, 0)
@@ -3968,6 +4045,8 @@ class MainWindow(Gtk.Window):
         self.stats_stack.add_named(self._build_sankey_section(), "fluss")
         self.stats_stack.add_named(self._build_compare_section(), "vergleich")
         self.stats_stack.add_named(self._build_year_compare_section(), "jahresvergleich")
+        self.stats_stack.add_named(self._build_budget_year_section(), "budgetjahr")
+        self.stats_stack.add_named(self._build_tags_section(), "tags")
 
         self._refresh_stats()
         return root
@@ -4352,6 +4431,153 @@ class MainWindow(Gtk.Window):
         self._yearcmp_future_from = 12
         return section
 
+    def _year_nav(self, section, label_attr):
+        nav = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        section.pack_start(nav, False, False, 0)
+        nav.pack_start(_nav_button("◀", lambda w: self._shift_yearcmp(-1)), False, False, 0)
+        label = Gtk.Label(label="")
+        setattr(self, label_attr, label)
+        nav.pack_start(label, False, False, 0)
+        nav.pack_start(_nav_button("▶", lambda w: self._shift_yearcmp(1)), False, False, 0)
+        return nav
+
+    @staticmethod
+    def _grid_cell(text, css=None, xalign=0.5, bold=False, italic=False, color=None):
+        label = Gtk.Label(xalign=xalign)
+        markup = GLib.markup_escape_text(text)
+        if bold:
+            markup = f"<b>{markup}</b>"
+        if italic:
+            markup = f"<i>{markup}</i>"
+        if color:
+            markup = f'<span foreground="{color}">{markup}</span>'
+        label.set_markup(markup)
+        label.set_margin_start(5)
+        label.set_margin_end(5)
+        label.set_margin_top(4)
+        label.set_margin_bottom(4)
+        return label
+
+    def _build_budget_year_section(self):
+        section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self._year_nav(section, "budgetyear_label")
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_shadow_type(Gtk.ShadowType.IN)
+        self.budgetyear_holder = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        scroller.add(self.budgetyear_holder)
+        section.pack_start(scroller, True, True, 0)
+        self.budgetyear_summary = Gtk.Label(xalign=0)
+        self.budgetyear_summary.set_line_wrap(True)
+        self.budgetyear_summary.set_max_width_chars(10)
+        section.pack_start(self.budgetyear_summary, False, False, 0)
+        return section
+
+    def _refresh_budget_year(self):
+        if not hasattr(self, "budgetyear_holder"):
+            return
+        year = self.stats_month.year
+        self.budgetyear_label.set_text(str(year))
+        data = self.store.budget_year_summary(year)
+        tk = theme.current()
+        for child in self.budgetyear_holder.get_children():
+            child.destroy()
+        rows = data["rows"]
+        if not rows:
+            self.budgetyear_summary.set_text(tr('Für dieses Jahr gibt es noch keine Budgets. Lege sie im Tab „Budgets“ an.'))
+            return
+        grid = Gtk.Grid()
+        headers = ([tr('Kategorie')] + list(months_short())
+                   + [tr('× drüber'), tr('× drunter'), tr('Summe drüber'), tr('Summe drunter'), tr('Saldo')])
+        for c, text in enumerate(headers):
+            grid.attach(self._grid_cell(text, bold=True, color=tk["muted"],
+                                        xalign=0.0 if c == 0 else 0.5), c, 0, 1, 1)
+
+        def signed(value):
+            return f"{'+' if value > 0.005 else ('−' if value < -0.005 else '±')}{abs(value):,.0f}".replace(",", ".")
+
+        def net_color(v):
+            return tk["negative"] if v > 0.005 else tk["positive"]
+
+        for i, row in enumerate(rows, start=1):
+            grid.attach(self._grid_cell(f"{row['icon']} {row['category_name']}", xalign=0.0), 0, i, 1, 1)
+            for m, cell in enumerate(row["cells"]):
+                if cell is None:
+                    grid.attach(self._grid_cell(""), 1 + m, i, 1, 1)
+                    continue
+                widget = self._grid_cell(signed(cell["diff"]), italic=not cell["complete"],
+                                         color=net_color(cell["diff"]))
+                tip = tr('Budget {0}, ausgegeben {1}').format(fmt_amount(cell["limit"]), fmt_amount(cell["spent"]))
+                if not cell["complete"]:
+                    tip += " – " + tr('Monat läuft noch, zählt noch nicht mit')
+                widget.set_tooltip_text(tip)
+                grid.attach(widget, 1 + m, i, 1, 1)
+            grid.attach(self._grid_cell(str(row["months_over"]),
+                                        color=tk["negative"] if row["months_over"] else None), 13, i, 1, 1)
+            grid.attach(self._grid_cell(str(row["months_under"])), 14, i, 1, 1)
+            grid.attach(self._grid_cell(fmt_amount(row["over_sum"]) if row["over_sum"] else "–", xalign=1.0), 15, i, 1, 1)
+            grid.attach(self._grid_cell(fmt_amount(row["under_sum"]) if row["under_sum"] else "–", xalign=1.0), 16, i, 1, 1)
+            grid.attach(self._grid_cell(("+" if row["net"] > 0.005 else "") + fmt_amount(row["net"]),
+                                        xalign=1.0, bold=True, color=net_color(row["net"])), 17, i, 1, 1)
+        t = data["totals"]
+        last = len(rows) + 1
+        grid.attach(self._grid_cell(tr('Gesamt'), bold=True, xalign=0.0), 0, last, 1, 1)
+        grid.attach(self._grid_cell(str(t["months_over"]), bold=True), 13, last, 1, 1)
+        grid.attach(self._grid_cell(str(t["months_under"]), bold=True), 14, last, 1, 1)
+        grid.attach(self._grid_cell(fmt_amount(t["over_sum"]), bold=True, xalign=1.0), 15, last, 1, 1)
+        grid.attach(self._grid_cell(fmt_amount(t["under_sum"]), bold=True, xalign=1.0), 16, last, 1, 1)
+        grid.attach(self._grid_cell(("+" if t["net"] > 0.005 else "") + fmt_amount(t["net"]),
+                                    bold=True, xalign=1.0, color=net_color(t["net"])), 17, last, 1, 1)
+        self.budgetyear_holder.pack_start(grid, False, False, 0)
+        self.budgetyear_holder.show_all()
+        self.budgetyear_summary.set_text(
+            tr('Pro Monat ist angegeben, wie viel Euro du über (+) oder unter (−) dem Budget lagst. Gezählt werden nur abgeschlossene Monate mit geltendem Budget; der laufende Monat ist kursiv und zählt noch nicht mit. „Saldo“ positiv = insgesamt mehr ausgegeben als budgetiert.'))
+
+    def _build_tags_section(self):
+        section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        nav = self._year_nav(section, "tags_label")
+        self.tags_all_check = Gtk.CheckButton(label=tr('Alle Jahre'))
+        self.tags_all_check.connect("toggled", lambda w: self._refresh_stats())
+        nav.pack_start(self.tags_all_check, False, False, 8)
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_shadow_type(Gtk.ShadowType.IN)
+        # Tag, Anzahl, Ausgaben, Einnahmen, Saldo, Saldo-Farbe
+        self.tags_store = Gtk.ListStore(str, str, str, str, str, str)
+        view = Gtk.TreeView(model=self.tags_store)
+        for col, title in enumerate((tr('Tag'), tr('Buchungen'), tr('Ausgaben'), tr('Einnahmen'), tr('Saldo'))):
+            renderer = Gtk.CellRendererText()
+            if col:
+                renderer.set_property("xalign", 1.0)
+            if col == 4:
+                column = Gtk.TreeViewColumn(title, renderer, text=col, foreground=5)
+            else:
+                column = Gtk.TreeViewColumn(title, renderer, text=col)
+            if col == 0:
+                column.set_expand(True)
+            view.append_column(column)
+        scroller.add(view)
+        section.pack_start(scroller, True, True, 0)
+        self.tags_hint = Gtk.Label(xalign=0)
+        self.tags_hint.set_line_wrap(True)
+        self.tags_hint.set_max_width_chars(10)
+        section.pack_start(self.tags_hint, False, False, 0)
+        return section
+
+    def _refresh_tags(self):
+        if not hasattr(self, "tags_store"):
+            return
+        all_years = self.tags_all_check.get_active()
+        year = None if all_years else self.stats_month.year
+        self.tags_label.set_text(tr('alle Jahre') if all_years else str(year))
+        rows = self.store.tag_summary(year)
+        tk = theme.current()
+        self.tags_store.clear()
+        for e in rows:
+            saldo = e["income"] - e["expense"]
+            self.tags_store.append([f"#{e['tag']}", str(e["count"]), fmt_amount(e["expense"]),
+                                    fmt_amount(e["income"]), fmt_amount(saldo),
+                                    tk["positive"] if saldo >= 0 else tk["negative"]])
+        self.tags_hint.set_text("" if rows else tr('Noch keine Buchungen mit Tags. Beim Anlegen oder Bearbeiten einer Buchung kannst du Tags wie „Urlaub“ eintragen; unabhängig von den Kategorien siehst du hier, was sie insgesamt gekostet haben.'))
+
     def _shift_yearcmp(self, delta):
         self.stats_month = add_months(self.stats_month, 12 * delta)
         self._refresh_stats()
@@ -4499,6 +4725,8 @@ class MainWindow(Gtk.Window):
         self.sankey_area.queue_draw()
         self._refresh_compare(month_str)
         self._refresh_year_compare()
+        self._refresh_budget_year()
+        self._refresh_tags()
 
     def _draw_text(self, cr, text, x, y, color, size=12, bold=False):
         """Zeichnet Text über Pango, damit Emoji-Fallback-Schriften funktionieren."""
@@ -5171,7 +5399,7 @@ class MainWindow(Gtk.Window):
                 tr('Einnahme') if r["kind"] == "einnahme" else tr('Ausgabe'),
                 fmt_amount(r["amount"]),
                 "#4caf50" if r["amount"] >= 0 else "#e05245",
-                r["description"] or "",
+                self._description_with_tags(r),
             ])
             if r["amount"] >= 0:
                 income += r["amount"]
@@ -5455,10 +5683,16 @@ class TransactionDialog(FormDialog):
         self.description_entry = Gtk.Entry(text=existing["description"] if existing else "")
         grid.attach(self.description_entry, 1, 4, 1, 1)
 
+        grid.attach(Gtk.Label(label=tr('Tags:'), xalign=0), 0, 5, 1, 1)
+        self.tags_entry = Gtk.Entry(
+            text=", ".join(store.split_tags(existing["tags"])) if existing else "")
+        self.tags_entry.set_placeholder_text(tr('z. B. Urlaub, Geschenk (mit Komma trennen)'))
+        grid.attach(self.tags_entry, 1, 5, 1, 1)
+
         if not existing:
             self.recurring_check = Gtk.CheckButton(label=tr('Wiederkehrende Buchung'))
             self.recurring_check.connect("toggled", self._on_recurring_toggled)
-            grid.attach(self.recurring_check, 0, 5, 2, 1)
+            grid.attach(self.recurring_check, 0, 6, 2, 1)
 
             self.frequency_combo = Gtk.ComboBoxText()
             self.frequency_combo.append("woechentlich", tr('Wöchentlich'))
@@ -5466,7 +5700,7 @@ class TransactionDialog(FormDialog):
             self.frequency_combo.append("jaehrlich", tr('Jährlich'))
             self.frequency_combo.set_active_id("monatlich")
             self.frequency_combo.set_sensitive(False)
-            grid.attach(self.frequency_combo, 0, 6, 2, 1)
+            grid.attach(self.frequency_combo, 0, 7, 2, 1)
         else:
             self.recurring_check = None
             if existing["recurring_template_id"] is not None:
@@ -5475,7 +5709,7 @@ class TransactionDialog(FormDialog):
                     label=tr('Diese Buchung stammt aus einer wiederkehrenden Vorlage. Änderungen betreffen nur diese einzelne Buchung.'),
                 )
                 note.set_line_wrap(True)
-                grid.attach(note, 0, 5, 2, 1)
+                grid.attach(note, 0, 6, 2, 1)
 
         self.show_all()
 
@@ -5491,6 +5725,7 @@ class TransactionDialog(FormDialog):
 
     def _on_recurring_toggled(self, widget):
         self.frequency_combo.set_sensitive(widget.get_active())
+        self.tags_entry.set_sensitive(not widget.get_active())  # Vorlagen kennen noch keine Tags
 
     def save(self):
         kind = self.kind_combo.get_active_id()
@@ -5512,7 +5747,8 @@ class TransactionDialog(FormDialog):
 
         if self.existing:
             self.store.update_transaction(
-                self.existing["id"], date_obj.isoformat(), amount, category_id, description
+                self.existing["id"], date_obj.isoformat(), amount, category_id, description,
+                tags=self.tags_entry.get_text()
             )
         elif self.recurring_check is not None and self.recurring_check.get_active():
             frequency = self.frequency_combo.get_active_id()
@@ -5521,7 +5757,8 @@ class TransactionDialog(FormDialog):
             )
         else:
             self.store.add_transaction(
-                date_obj.isoformat(), amount, category_id, description
+                date_obj.isoformat(), amount, category_id, description,
+                tags=self.tags_entry.get_text()
             )
 
 
@@ -5755,7 +5992,7 @@ class BudgetDialog(FormDialog):
         self.category_combo.set_active(active_index)
         grid.attach(self.category_combo, 1, 0, 1, 1)
 
-        grid.attach(Gtk.Label(label=tr('Monatsbudget für {0} (€):').format(month_label(month)),
+        grid.attach(Gtk.Label(label=tr('Monatsbudget ab {0} (€):').format(month_label(month)),
                                xalign=0), 0, 1, 1, 1)
         self.amount_spin = Gtk.SpinButton(
             adjustment=Gtk.Adjustment(value=0, lower=0, upper=1000000,
@@ -5764,7 +6001,21 @@ class BudgetDialog(FormDialog):
         )
         grid.attach(self.amount_spin, 1, 1, 1, 1)
 
+        hint = Gtk.Label(label=tr('Das Budget gilt ab diesem Monat und läuft danach automatisch weiter, bis du es änderst oder beendest. Frühere Monate bleiben unverändert.'), xalign=0)
+        hint.set_line_wrap(True)
+        hint.set_max_width_chars(44)
+        hint.get_style_context().add_class("muted")
+        grid.attach(hint, 0, 2, 2, 1)
+
+        self._limits = {r["category_id"]: r["limit_amount"]
+                        for r in store.budget_overview(month.strftime("%Y-%m"))}
+        self.category_combo.connect("changed", self._preload_amount)
+        self._preload_amount()
         self.show_all()
+
+    def _preload_amount(self, *_args):
+        category_id = self.category_combo.get_active_id()
+        self.amount_spin.set_value((self._limits.get(int(category_id)) or 0) if category_id else 0)
 
     def save(self):
         category_id = int(self.category_combo.get_active_id())

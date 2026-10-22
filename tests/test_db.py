@@ -174,7 +174,8 @@ def test_budget_levels(store):
     store.add_transaction("2026-05-10", -85.0, food, "x")
     st = store.budget_status(food, "2026-05")
     assert st["level"] == "warn" and st["spent"] == 85.0
-    assert store.budget_status(food, "2026-06") is None   # kein Budget gesetzt
+    assert store.budget_status(food, "2026-04") is None   # vor dem ersten Budget
+    assert store.budget_status(food, "2026-06")["limit"] == 100.0   # wird übernommen
 
 
 def test_json_backup_roundtrip_keeps_settings_and_templates(store, tmp_path):
@@ -265,3 +266,106 @@ def test_dashboard_data(store):
     assert d["top_budgets"][0]["name"] == "Testessen" and d["top_budgets"][0]["spent"] == 200.0
     assert d["recent"][0]["description"] == "c" and len(d["recent"]) <= 6
     assert len(d["trend"]) == 6 and d["balance"] is None
+
+
+def test_budget_inherited_until_changed_or_ended(store):
+    rent = _cat(store, "Testmiete")
+    store.set_budget(rent, "2026-03", 800.0)
+    ov = {r["category_id"]: r for r in store.budget_overview("2026-05")}
+    assert ov[rent]["limit_amount"] == 800.0 and ov[rent]["inherited_from"] == "2026-03"
+    # Vor dem ersten Eintrag gilt noch nichts
+    assert {r["category_id"]: r for r in store.budget_overview("2026-02")}[rent]["limit_amount"] is None
+    # Änderung gilt ab diesem Monat weiter, frühere Monate bleiben unverändert
+    store.set_budget(rent, "2026-06", 850.0)
+    get = lambda m: {r["category_id"]: r for r in store.budget_overview(m)}[rent]
+    assert get("2026-05")["limit_amount"] == 800.0
+    assert get("2026-06")["limit_amount"] == 850.0 and get("2026-06")["inherited_from"] is None
+    assert get("2026-09")["limit_amount"] == 850.0 and get("2026-09")["inherited_from"] == "2026-06"
+    # Beenden wirkt nur nach vorn
+    store.end_budget(rent, "2026-08")
+    assert get("2026-07")["limit_amount"] == 850.0
+    assert get("2026-08")["limit_amount"] is None and get("2026-10")["limit_amount"] is None
+    assert store.budget_status(rent, "2026-10") is None
+    # Danach lässt sich wieder ein Budget setzen
+    store.set_budget(rent, "2026-11", 900.0)
+    assert get("2026-12")["limit_amount"] == 900.0
+
+
+def test_budget_year_summary(store):
+    food = _cat(store, "Testessen")
+    store.set_budget(food, "2026-01", 100.0)
+    store.add_transaction("2026-01-10", -80.0, food, "")     # 20 drunter
+    store.add_transaction("2026-02-10", -130.0, food, "")    # 30 drüber
+    store.add_transaction("2026-03-10", -100.0, food, "")    # genau Budget = nicht drüber
+    store.add_transaction("2026-04-10", -500.0, food, "")    # laufender Monat zählt nicht mit
+    s = store.budget_year_summary(2026, today=datetime.date(2026, 4, 15))
+    row = next(r for r in s["rows"] if r["category_id"] == food)
+    assert s["complete_months"] == 3
+    assert row["months_over"] == 1 and row["months_under"] == 2
+    assert row["over_sum"] == 30.0 and row["under_sum"] == 20.0 and row["net"] == 10.0
+    assert row["cells"][3]["complete"] is False and row["cells"][4] is None
+    assert s["totals"]["net"] == 10.0
+
+
+def test_tags_normalize_search_and_summary(store, tmp_path):
+    fun = _cat(store, "Testspaß")
+    assert store.normalize_tags(" #Urlaub, 2026 ;urlaub,, ") == "Urlaub,2026"
+    t1 = store.add_transaction("2026-03-01", -50.0, fun, "Hotel", tags="Urlaub, #2026")
+    store.add_transaction("2026-03-02", -20.0, fun, "Eis", tags="urlaub")
+    store.add_transaction("2026-03-03", -10.0, fun, "Kino")
+    rows, _ = store.search_transactions(tag="#URLAUB")
+    assert {r["description"] for r in rows} == {"Hotel", "Eis"}
+    rows, _ = store.search_transactions(text="#2026")
+    assert [r["description"] for r in rows] == ["Hotel"]
+    summary = {e["tag"].lower(): e for e in store.tag_summary(2026)}
+    assert summary["urlaub"]["count"] == 2 and summary["urlaub"]["expense"] == 70.0
+    assert summary["2026"]["count"] == 1
+    assert [t.lower() for t in store.list_tags()] == ["2026", "urlaub"]
+    # Bearbeiten: None lässt Tags stehen, "" entfernt sie
+    store.update_transaction(t1, "2026-03-01", -50.0, fun, "Hotel")
+    assert store.get_transaction(t1)["tags"] == "Urlaub,2026"
+    store.update_transaction(t1, "2026-03-01", -50.0, fun, "Hotel", tags="")
+    assert store.get_transaction(t1)["tags"] == ""
+    # CSV-Rundlauf
+    store.update_transaction(t1, "2026-03-01", -50.0, fun, "Hotel", tags="Urlaub")
+    path = tmp_path / "x.csv"
+    store.export_transactions_csv(path)
+    assert path.read_text(encoding="utf-8").splitlines()[0].endswith("Tags")
+    for r in store.list_transactions():
+        store.delete_transaction(r["id"])
+    store.import_transactions_csv(path)
+    rows, _ = store.search_transactions(tag="urlaub")
+    assert len(rows) == 2
+
+
+def test_tags_column_migrates_old_database(tmp_path):
+    for variant in ("gtk", "qt"):
+        path = tmp_path / f"{variant}.db"
+        s = _load(variant).FinanceStore(path)
+        s.conn.execute("ALTER TABLE transactions DROP COLUMN tags")
+        s.conn.commit()
+        s.conn.close()
+        s2 = _load(variant).FinanceStore(path)
+        cols = {r["name"] for r in s2.conn.execute("PRAGMA table_info(transactions)")}
+        assert "tags" in cols
+        s2.conn.close()
+
+
+def test_month_summary_and_pending(store):
+    food, job = _cat(store, "Testessen"), _cat(store, "Testgehalt", "einnahme")
+    store.set_budget(food, "2026-08", 100.0)
+    store.add_transaction("2026-07-02", -100.0, food, "")
+    store.add_transaction("2026-08-01", 1000.0, job, "")
+    store.add_transaction("2026-08-05", -150.0, food, "")
+    s = store.month_summary("2026-08")
+    assert s["income"] == 1000.0 and s["expense"] == 150.0 and s["saved"] == 850.0
+    assert abs(s["saving_rate"] - 0.85) < 1e-9
+    assert abs(s["expense_change"] - 0.5) < 1e-9
+    assert s["top_category"]["name"] == "Testessen" and s["top_category"]["share"] == 1.0
+    assert s["budget_count"] == 1 and s["budgets_ok"] == 0
+    assert s["budgets_over"][0]["over_by"] == 50.0
+    today = datetime.date(2026, 9, 3)
+    assert store.pending_month_summary(today)["month"] == "2026-08"
+    store.dismiss_month_summary("2026-08")
+    assert store.pending_month_summary(today) is None
+    assert store.pending_month_summary(datetime.date(2027, 1, 3)) is None  # Dezember leer

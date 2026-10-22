@@ -27,7 +27,9 @@ Datenbank-Logik teilen:
 - **Wiederkehrende Buchungen**, die unbegrenzt weiterlaufen und sich
   nachträglich bearbeiten lassen – wahlweise nur für die Zukunft oder
   rückwirkend
-- **Budgets** pro Kategorie und Monat mit Fortschrittsbalken
+- **Budgets** pro Kategorie mit Fortschrittsbalken; ein Budget gilt ab dem Monat, für den
+  es gesetzt wird, automatisch weiter (↺ = übernommen), bis man es ändert oder beendet –
+  frühere Monate bleiben unverändert
 - **Sparziele** mit manuell einstellbarer Priorität
 - **Finanzplanung**: Kontostand (Startguthaben + Buchungen seitdem),
   Notgroschen-Berechnung aus den laufenden Fixkosten und eine transparente
@@ -58,6 +60,12 @@ Datenbank-Logik teilen:
   (Simulation, keine Anlageempfehlung)
 - **Notgroschen als Unterkonto** (optional): Girokonto und Notgroschen werden
   getrennt ausgewiesen, ohne dass gebuchte Sparbeiträge doppelt zählen
+- **Budgets im Jahr**: je Kategorie und Monat, um wie viel man über oder unter dem
+  Budget lag, dazu wie oft und in welcher Summe – nur abgeschlossene Monate zählen
+- **Tags** an Buchungen („Urlaub“, „Geschenk“ …): in der Suche auffindbar, in den
+  Auswertungen nach Tag aufsummiert, im CSV-Export/-Import enthalten
+- **Monatsabschluss**: Rückblick auf den Vormonat auf der Übersichtsseite (Gespart,
+  Sparquote, Vergleich zum Vormonat, größte Ausgabe, eingehaltene Budgets), bis man ihn ausblendet
 - **Modernes Design**: Seitenleiste mit Icons, eine **Übersichtsseite**
   (Gesamtvermögen, Monatssaldo, Notgroschen, Ausgabentempo, Budgets, Sparziele,
   Trend der letzten Monate, letzte Buchungen) sowie ein **helles und dunkles
@@ -100,6 +108,7 @@ Linux zusätzlich `bash packaging/build-appimage.sh <Version>`.
 | | |
 |---|---|
 | ![Übersicht dunkel](docs/screenshots/13-uebersicht-dunkel.png) | ![Übersicht hell](docs/screenshots/14-uebersicht-hell.png) |
+| ![Monatsabschluss](docs/screenshots/18-monatsabschluss.png) | ![Budgets im Jahr](docs/screenshots/16-budgets-im-jahr.png) |
 
 | | |
 |---|---|

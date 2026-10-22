@@ -871,4 +871,68 @@ EN = {
         'Backup',
     'Darstellung':
         'Appearance',
+    'Budgets gelten für den im Buchungen-Tab im Kalender sichtbaren Monat. Ein Budget läuft ab dem Monat, für den du es setzt, automatisch weiter (↺ = übernommen), bis du es änderst oder beendest.':
+        'Budgets apply to the month shown in the calendar on the Bookings tab. A budget runs on automatically from the month you set it (↺ = carried over) until you change or end it.',
+    'Budget beenden':
+        'End budget',
+    'Beendet das Budget der markierten Kategorie ab dem angezeigten Monat; frühere Monate bleiben unverändert.':
+        'Ends the budget of the selected category from the month shown; earlier months stay unchanged.',
+    'Budgets im Jahr':
+        'Budgets over the year',
+    'Tags':
+        'Tags',
+    'Alle Jahre':
+        'All years',
+    'Tag':
+        'Tag',
+    'Saldo':
+        'Balance',
+    'Ausblenden':
+        'Dismiss',
+    'Bitte zuerst eine Kategorie markieren.':
+        'Please select a category first.',
+    'Für diese Kategorie gilt in diesem Monat kein Budget.':
+        'This category has no budget in this month.',
+    '× drüber':
+        '× over',
+    '× drunter':
+        '× under',
+    'Summe drüber':
+        'Total over',
+    'Summe drunter':
+        'Total under',
+    'Pro Monat ist angegeben, wie viel Euro du über (+) oder unter (−) dem Budget lagst. Gezählt werden nur abgeschlossene Monate mit geltendem Budget; der laufende Monat ist kursiv und zählt noch nicht mit. „Saldo“ positiv = insgesamt mehr ausgegeben als budgetiert.':
+        'Each month shows how many euros you were over (+) or under (−) the budget. Only completed months with an active budget are counted; the current month is in italics and does not count yet. A positive “Balance” means you spent more than budgeted overall.',
+    'Für dieses Jahr gibt es noch keine Budgets. Lege sie im Tab „Budgets“ an.':
+        'There are no budgets for this year yet. Create them on the “Budgets” tab.',
+    'alle Jahre':
+        'all years',
+    'Noch keine Buchungen mit Tags. Beim Anlegen oder Bearbeiten einer Buchung kannst du Tags wie „Urlaub“ eintragen; unabhängig von den Kategorien siehst du hier, was sie insgesamt gekostet haben.':
+        'No bookings with tags yet. When adding or editing a booking you can enter tags such as “Holiday”; independent of categories, this shows what they cost in total.',
+    'Monatsabschluss {0}':
+        'Month in review: {0}',
+    'Gespart {0}':
+        'Saved {0}',
+    'Budgets: {0} von {1} eingehalten':
+        'Budgets: {0} of {1} kept',
+    'Ausgaben {0}{1:.0f} % gegenüber dem Vormonat':
+        'Expenses {0}{1:.0f} % compared with the previous month',
+    'Größte Ausgabe: {0} {1} ({2}, {3:.0f} %)':
+        'Biggest expense: {0} {1} ({2}, {3:.0f} %)',
+    'Budget {0}, ausgegeben {1}':
+        'Budget {0}, spent {1}',
+    'Monat läuft noch, zählt noch nicht mit':
+        'month still running, not counted yet',
+    'drüber: {0}':
+        'over: {0}',
+    'Übernommen aus {0}':
+        'Carried over from {0}',
+    'z. B. Urlaub, Geschenk (mit Komma trennen)':
+        'e.g. Holiday, Gift (separate with commas)',
+    'Das Budget gilt ab diesem Monat und läuft danach automatisch weiter, bis du es änderst oder beendest. Frühere Monate bleiben unverändert.':
+        'The budget applies from this month and then continues automatically until you change or end it. Earlier months stay unchanged.',
+    'Tags:':
+        'Tags:',
+    'Monatsbudget ab {0} (€):':
+        'Monthly budget from {0} (€):',
 }

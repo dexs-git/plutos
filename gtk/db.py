@@ -22,6 +22,7 @@ import sqlite3
 import json
 import collections
 import csv
+import re
 import datetime
 import math
 from pathlib import Path
@@ -185,6 +186,10 @@ class FinanceStore:
         if "max_monthly_amount" not in existing_etf_cols:
             c.execute("ALTER TABLE etf_plans ADD COLUMN max_monthly_amount REAL")
 
+        existing_tx_cols = {row["name"] for row in c.execute("PRAGMA table_info(transactions)")}
+        if "tags" not in existing_tx_cols:
+            c.execute("ALTER TABLE transactions ADD COLUMN tags TEXT NOT NULL DEFAULT ''")
+
         existing_goal_cols = {row["name"] for row in c.execute("PRAGMA table_info(savings_goals)")}
         if "priority" not in existing_goal_cols:
             c.execute("ALTER TABLE savings_goals ADD COLUMN priority INTEGER")
@@ -262,22 +267,51 @@ class FinanceStore:
 
     # -- Buchungen ----------------------------------------------------------
 
+    @staticmethod
+    def normalize_tags(text):
+        """Macht aus Eingaben wie "Urlaub, #2026 ; urlaub" eine saubere,
+        kommagetrennte Liste ("Urlaub,2026"): Raute und Leerraum entfernt,
+        Duplikate (ohne Beachtung der Schreibweise) nur einmal."""
+        if not text:
+            return ""
+        seen, result = set(), []
+        for part in re.split(r"[,;]", text):
+            tag = part.strip().lstrip("#").strip()
+            if tag and tag.lower() not in seen:
+                seen.add(tag.lower())
+                result.append(tag)
+        return ",".join(result)
+
+    @staticmethod
+    def split_tags(tags):
+        return [t for t in (tags or "").split(",") if t]
+
     def add_transaction(self, date, amount, category_id, description,
-                         recurring_template_id=None):
+                         recurring_template_id=None, tags=""):
         cur = self.conn.execute(
             "INSERT INTO transactions (date, amount, category_id, description, "
-            "recurring_template_id) VALUES (?, ?, ?, ?, ?)",
-            (date, amount, category_id, description, recurring_template_id),
+            "recurring_template_id, tags) VALUES (?, ?, ?, ?, ?, ?)",
+            (date, amount, category_id, description, recurring_template_id,
+             self.normalize_tags(tags)),
         )
         self.conn.commit()
         return cur.lastrowid
 
-    def update_transaction(self, transaction_id, date, amount, category_id, description):
-        self.conn.execute(
-            "UPDATE transactions SET date = ?, amount = ?, category_id = ?, description = ? "
-            "WHERE id = ?",
-            (date, amount, category_id, description, transaction_id),
-        )
+    def update_transaction(self, transaction_id, date, amount, category_id, description,
+                            tags=None):
+        """tags=None lässt die vorhandenen Tags unverändert."""
+        if tags is None:
+            self.conn.execute(
+                "UPDATE transactions SET date = ?, amount = ?, category_id = ?, description = ? "
+                "WHERE id = ?",
+                (date, amount, category_id, description, transaction_id),
+            )
+        else:
+            self.conn.execute(
+                "UPDATE transactions SET date = ?, amount = ?, category_id = ?, description = ?, "
+                "tags = ? WHERE id = ?",
+                (date, amount, category_id, description, self.normalize_tags(tags), transaction_id),
+            )
         self.conn.commit()
 
     def get_transaction(self, transaction_id):
@@ -357,7 +391,7 @@ class FinanceStore:
         """month im Format YYYY-MM, oder None für alle Buchungen."""
         pattern = _month_pattern(month) if month else "%"
         cur = self.conn.execute("""
-            SELECT t.id, t.date, t.amount, t.description, t.recurring_template_id,
+            SELECT t.id, t.date, t.amount, t.description, t.recurring_template_id, t.tags,
                    c.id AS category_id, c.name AS category_name, c.kind, c.icon
             FROM transactions t JOIN categories c ON t.category_id = c.id
             WHERE t.date LIKE ?
@@ -367,12 +401,14 @@ class FinanceStore:
 
     def search_transactions(self, text=None, category_id=None, kind=None,
                             date_from=None, date_to=None, min_amount=None,
-                            max_amount=None, include_future=False, limit=2000):
+                            max_amount=None, include_future=False, limit=2000, tag=None):
         """Durchsucht alle Buchungen. Alle Filter sind optional und werden
         mit UND verknüpft.
 
-        text: Teilstring in Beschreibung oder Kategoriename (ohne Beachtung
-              der Groß-/Kleinschreibung)
+        text: Teilstring in Beschreibung, Kategoriename oder Tags (ohne
+              Beachtung der Groß-/Kleinschreibung); ein führendes "#" wird
+              ignoriert
+        tag: genau dieses Tag (z. B. "Urlaub")
         kind: 'einnahme' oder 'ausgabe'
         date_from/date_to: ISO-Datum 'YYYY-MM-DD', jeweils einschließlich
         min_amount/max_amount: Grenzen für den Betrag OHNE Vorzeichen
@@ -383,9 +419,13 @@ class FinanceStore:
         `limit` Treffer existieren."""
         where, params = [], []
         if text:
-            pattern = f"%{text.strip().lower()}%"
-            where.append("(LOWER(COALESCE(t.description, '')) LIKE ? OR LOWER(c.name) LIKE ?)")
-            params += [pattern, pattern]
+            pattern = f"%{text.strip().lstrip('#').lower()}%"
+            where.append("(LOWER(COALESCE(t.description, '')) LIKE ? OR LOWER(c.name) LIKE ? "
+                         "OR LOWER(COALESCE(t.tags, '')) LIKE ?)")
+            params += [pattern, pattern, pattern]
+        if tag:
+            where.append("(',' || LOWER(COALESCE(t.tags, '')) || ',') LIKE ?")
+            params.append(f"%,{tag.strip().lstrip('#').lower()},%")
         if category_id is not None:
             where.append("c.id = ?")
             params.append(category_id)
@@ -408,7 +448,7 @@ class FinanceStore:
             where.append("ABS(t.amount) <= ?")
             params.append(max_amount + 0.005)
         sql = """
-            SELECT t.id, t.date, t.amount, t.description, t.recurring_template_id,
+            SELECT t.id, t.date, t.amount, t.description, t.recurring_template_id, t.tags,
                    c.id AS category_id, c.name AS category_name, c.kind, c.icon
             FROM transactions t JOIN categories c ON t.category_id = c.id
         """
@@ -420,7 +460,7 @@ class FinanceStore:
 
     def list_transactions_for_day(self, date):
         cur = self.conn.execute("""
-            SELECT t.id, t.date, t.amount, t.description, t.recurring_template_id,
+            SELECT t.id, t.date, t.amount, t.description, t.recurring_template_id, t.tags,
                    c.id AS category_id, c.name AS category_name, c.kind, c.icon
             FROM transactions t JOIN categories c ON t.category_id = c.id
             WHERE t.date = ?
@@ -604,6 +644,13 @@ class FinanceStore:
     # -- Budgets --------------------------------------------------------------
 
     def set_budget(self, category_id, month, limit_amount):
+        """Setzt das Budget einer Kategorie ab diesem Monat (YYYY-MM). Es gilt
+        für alle folgenden Monate weiter, bis ein neuer Wert gesetzt oder das
+        Budget beendet wird; frühere Monate bleiben unverändert. Ein Betrag
+        von 0 (oder None) beendet das Budget ab diesem Monat."""
+        limit_amount = float(limit_amount or 0)
+        if limit_amount < 0:
+            limit_amount = 0.0
         self.conn.execute("""
             INSERT INTO budgets (category_id, month, limit_amount)
             VALUES (?, ?, ?)
@@ -611,23 +658,94 @@ class FinanceStore:
         """, (category_id, month, limit_amount))
         self.conn.commit()
 
+    def end_budget(self, category_id, month):
+        """Beendet das Budget einer Kategorie ab diesem Monat (spätere Monate
+        haben dann kein Budget, bis wieder eines gesetzt wird)."""
+        self.set_budget(category_id, month, 0)
+
+    def _effective_budgets(self, month):
+        """{category_id: (limit, quelle_monat)} der zum Monat geltenden
+        Budgets: je Kategorie der jüngste Eintrag bis einschließlich dieses
+        Monats. Beendete Budgets (Betrag 0) fehlen im Ergebnis."""
+        latest = {}
+        for r in self.conn.execute(
+                "SELECT category_id, month, limit_amount FROM budgets "
+                "WHERE month <= ? ORDER BY month", (month,)):
+            latest[r["category_id"]] = (r["limit_amount"], r["month"])
+        return {cid: v for cid, v in latest.items() if v[0] and v[0] > 0}
+
     def budget_overview(self, month):
-        """Liefert je Ausgaben-Kategorie: Budgetlimit (falls gesetzt) und Ist-Ausgaben.
-        Der Datumsfilter sitzt bewusst in der JOIN-Bedingung (nicht erst im
-        SUM/CASE), damit SQLite pro Kategorie nur die Buchungen des
-        gewünschten Monats heranzieht statt aller Buchungen aller Zeiten."""
+        """Liefert je Ausgaben-Kategorie: geltendes Budgetlimit (None, wenn
+        keines), Ist-Ausgaben und `inherited_from` – der Monat, aus dem das
+        Budget übernommen wurde (None, wenn es für genau diesen Monat gesetzt
+        wurde oder kein Budget gilt)."""
+        effective = self._effective_budgets(month)
         cur = self.conn.execute("""
             SELECT c.id AS category_id, c.name AS category_name, c.icon,
-                   b.limit_amount,
                    COALESCE(SUM(-t.amount), 0) AS spent
             FROM categories c
-            LEFT JOIN budgets b ON b.category_id = c.id AND b.month = ?
             LEFT JOIN transactions t ON t.category_id = c.id AND t.date LIKE ?
             WHERE c.kind = 'ausgabe'
             GROUP BY c.id
             ORDER BY c.name
-        """, (month, _month_pattern(month)))
-        return cur.fetchall()
+        """, (_month_pattern(month),))
+        rows = []
+        for r in cur.fetchall():
+            limit, source = effective.get(r["category_id"], (None, None))
+            rows.append({
+                "category_id": r["category_id"], "category_name": r["category_name"],
+                "icon": r["icon"], "limit_amount": limit, "spent": r["spent"],
+                "inherited_from": source if source and source != month else None,
+            })
+        return rows
+
+    def budget_year_summary(self, year, today=None):
+        """Wie oft und um wie viel lag man je Kategorie über/unter dem
+        Monatsbudget? Gezählt werden nur abgeschlossene Monate des Jahres mit
+        geltendem Budget; der laufende Monat steht in `cells`, zählt aber noch
+        nicht mit.
+
+        Rückgabe: {"year", "complete_months", "rows": [...], "totals": {...}};
+        jede Zeile hat category_id/-name/icon, `cells` (12 Einträge: None oder
+        {limit, spent, diff, complete}), months_over, months_under, over_sum
+        (Summe der Überschreitungen), under_sum (Summe nicht ausgegebener
+        Beträge) und net (Ausgaben minus Budget, positiv = insgesamt drüber)."""
+        today = today or datetime.date.today()
+        current = f"{today.year:04d}-{today.month:02d}"
+        per_category = {}
+        for m in range(1, 13):
+            key = f"{year:04d}-{m:02d}"
+            if key > current:
+                break
+            for r in self.budget_overview(key):
+                if not r["limit_amount"]:
+                    continue
+                row = per_category.setdefault(r["category_id"], {
+                    "category_id": r["category_id"], "category_name": r["category_name"],
+                    "icon": r["icon"], "cells": [None] * 12,
+                    "months_over": 0, "months_under": 0, "over_sum": 0.0,
+                    "under_sum": 0.0, "net": 0.0})
+                diff = r["spent"] - r["limit_amount"]
+                complete = key < current
+                row["cells"][m - 1] = {"limit": r["limit_amount"], "spent": r["spent"],
+                                       "diff": diff, "complete": complete}
+                if complete:
+                    if diff > 0.005:
+                        row["months_over"] += 1
+                        row["over_sum"] += diff
+                    else:
+                        row["months_under"] += 1
+                        row["under_sum"] += -diff
+                    row["net"] += diff
+        rows = sorted(per_category.values(), key=lambda r: r["category_name"].lower())
+        totals = {"months_over": sum(r["months_over"] for r in rows),
+                  "months_under": sum(r["months_under"] for r in rows),
+                  "over_sum": sum(r["over_sum"] for r in rows),
+                  "under_sum": sum(r["under_sum"] for r in rows),
+                  "net": sum(r["net"] for r in rows)}
+        return {"year": year, "rows": rows, "totals": totals,
+                "complete_months": sum(1 for m in range(1, 13)
+                                       if f"{year:04d}-{m:02d}" < current)}
 
     BUDGET_WARN_FRACTION = 0.8
 
@@ -1434,15 +1552,100 @@ class FinanceStore:
 
     # -- Export / Import ----------------------------------------------------------
 
+    # -- Tags -------------------------------------------------------------------
+
+    def tag_summary(self, year=None):
+        """Auswertung nach Tags: je Tag Anzahl der Buchungen sowie Summe der
+        Ausgaben und Einnahmen (year=None: alle Jahre). Sortiert nach
+        Ausgaben, absteigend. Geplante, noch zukünftige Buchungen zählen
+        nicht mit."""
+        pattern = f"{year:04d}-%" if year else "%"
+        today = datetime.date.today().isoformat()
+        stats = {}
+        for r in self.conn.execute(
+                "SELECT amount, tags FROM transactions "
+                "WHERE tags != '' AND date LIKE ? AND date <= ?", (pattern, today)):
+            for tag in self.split_tags(r["tags"]):
+                entry = stats.setdefault(tag.lower(), {"tag": tag, "count": 0,
+                                                       "expense": 0.0, "income": 0.0})
+                entry["count"] += 1
+                if r["amount"] < 0:
+                    entry["expense"] += -r["amount"]
+                else:
+                    entry["income"] += r["amount"]
+        return sorted(stats.values(), key=lambda e: (-e["expense"], e["tag"].lower()))
+
+    def list_tags(self):
+        """Alle verwendeten Tags (alphabetisch), z. B. für Vorschläge."""
+        names = {}
+        for r in self.conn.execute("SELECT DISTINCT tags FROM transactions WHERE tags != ''"):
+            for tag in self.split_tags(r["tags"]):
+                names.setdefault(tag.lower(), tag)
+        return sorted(names.values(), key=str.lower)
+
+    # -- Monatsabschluss ----------------------------------------------------------
+
+    def month_summary(self, month):
+        """Kennzahlen eines abgeschlossenen Monats (YYYY-MM): Einnahmen,
+        Ausgaben, Gespartes, Sparquote, Vergleich zum Vormonat, größte
+        Ausgabenkategorie sowie wie viele Budgets eingehalten wurden."""
+        def sums(m):
+            row = self.conn.execute(
+                "SELECT COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END), 0) AS income, "
+                "COALESCE(SUM(CASE WHEN amount < 0 THEN -amount ELSE 0 END), 0) AS expense, "
+                "COUNT(*) AS n FROM transactions WHERE date LIKE ?", (_month_pattern(m),)).fetchone()
+            return row["income"], row["expense"], row["n"]
+
+        income, expense, count = sums(month)
+        year, mon = int(month[:4]), int(month[5:7])
+        prev = add_months(datetime.date(year, mon, 1), -1).strftime("%Y-%m")
+        prev_income, prev_expense, prev_count = sums(prev)
+        top = self.spending_by_category(month)
+        top_category = None
+        if top:
+            best = max(top, key=lambda r: r["total"])
+            top_category = {"name": best["category_name"], "icon": best["icon"], "amount": best["total"],
+                            "share": best["total"] / expense if expense else 0.0}
+        budgets = [r for r in self.budget_overview(month) if r["limit_amount"]]
+        over = sorted(({"name": r["category_name"], "icon": r["icon"],
+                        "over_by": r["spent"] - r["limit_amount"]}
+                       for r in budgets if r["spent"] - r["limit_amount"] > 0.005),
+                      key=lambda r: -r["over_by"])
+        return {
+            "month": month, "count": count, "income": income, "expense": expense,
+            "saved": income - expense,
+            "saving_rate": (income - expense) / income if income > 0 else None,
+            "prev_expense": prev_expense if prev_count else None,
+            "expense_change": ((expense - prev_expense) / prev_expense
+                               if prev_count and prev_expense > 0 else None),
+            "top_category": top_category,
+            "budget_count": len(budgets), "budgets_ok": len(budgets) - len(over),
+            "budgets_over": over,
+        }
+
+    def pending_month_summary(self, today=None):
+        """Monatsabschluss für den Vormonat, solange er Buchungen enthält und
+        noch nicht ausgeblendet wurde; sonst None."""
+        today = today or datetime.date.today()
+        prev = add_months(today.replace(day=1), -1).strftime("%Y-%m")
+        if self.get_setting("month_summary_seen") == prev:
+            return None
+        summary = self.month_summary(prev)
+        return summary if summary["count"] else None
+
+    def dismiss_month_summary(self, month):
+        self.set_setting("month_summary_seen", month)
+
     def export_transactions_csv(self, path):
         rows = self.list_transactions()
         with open(path, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f, delimiter=";")
-            writer.writerow(["Datum", "Kategorie", "Art", "Betrag", "Beschreibung"])
+            writer.writerow(["Datum", "Kategorie", "Art", "Betrag", "Beschreibung", "Tags"])
             for r in rows:
                 writer.writerow([
                     r["date"], r["category_name"], r["kind"],
                     f"{r['amount']:.2f}".replace(".", ","), r["description"] or "",
+                    ", ".join(self.split_tags(r["tags"])),
                 ])
 
     # Spaltennamen-Synonyme (klein geschrieben, ohne Leerzeichen) für den CSV-Import,
@@ -1455,6 +1658,7 @@ class FinanceStore:
         "kind": {"art", "kind", "type", "typ"},
         "description": {"beschreibung", "description", "verwendungszweck", "notiz",
                          "note", "buchungstext", "text"},
+        "tags": {"tags", "tag", "schlagwörter", "schlagworte", "labels"},
         "payee": {"empfänger", "zahlungsempfänger", "beguenstigter/zahlungspflichtiger",
                    "begünstigter/zahlungspflichtiger", "auftraggeber", "payee", "name"},
     }
@@ -1629,7 +1833,9 @@ class FinanceStore:
                                          else "Sonstige Ausgaben")
                 category = self.get_or_create_category(category_name, kind, icon)
 
-                self.add_transaction(date_obj.isoformat(), amount, category["id"], description)
+                tags = (row.get(columns.get("tags"), "") or "") if "tags" in columns else ""
+                self.add_transaction(date_obj.isoformat(), amount, category["id"], description,
+                                     tags=tags)
                 imported += 1
 
             return {"imported": imported, "skipped": skipped,

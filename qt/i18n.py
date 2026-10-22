@@ -793,4 +793,82 @@ EN = {
         'Template',
     'bereits voll gedeckt':
         'already fully covered',
+    'Alle ansehen':
+        'View all',
+    'Ausgabentempo':
+        'Spending pace',
+    'Berechnet bis heute':
+        'Calculated up to today',
+    'Bis Monatsende geplant: {0} Ausgaben':
+        'Planned until month end: {0} in expenses',
+    'Budgets im Monat':
+        'Budgets this month',
+    'Darstellung:':
+        'Appearance:',
+    'Das Haushaltsbuch':
+        'The household book',
+    'Die Darstellung wird nach einem Neustart vollständig übernommen.':
+        'The appearance is fully applied after a restart.',
+    'Dunkel':
+        'Dark',
+    'Einnahmen {0} · Ausgaben {1}':
+        'Income {0} · Expenses {1}',
+    'Gesamtvermögen':
+        'Total assets',
+    'Girokonto {0} · Notgroschen {1}':
+        'Checking account {0} · Emergency fund {1}',
+    'Hell':
+        'Light',
+    'In der Finanzplanung einrichten':
+        'Set up in Financial planning',
+    'Kontostand in der Finanzplanung hinterlegen':
+        'Enter your balance under Financial planning',
+    'Letzte 6 Monate':
+        'Last 6 months',
+    'Letzte Buchungen':
+        'Recent bookings',
+    'Noch keine Buchungen.':
+        'No bookings yet.',
+    'Noch keine Budgets für diesen Monat.':
+        'No budgets for this month yet.',
+    'Noch keine Sparziele angelegt.':
+        'No savings goals yet.',
+    'Noch nicht eingerichtet':
+        'Not set up yet',
+    'Notgroschen':
+        'Emergency fund',
+    'Saldo im {0}':
+        'Balance in {0}',
+    'Sobald Budgets gesetzt sind oder Buchungen aus Vormonaten vorliegen, zeigt Plutos hier, ob du im Rahmen bleibst.':
+        'Once budgets are set or earlier months have bookings, Plutos shows here whether you are on track.',
+    'Sparziel anlegen':
+        'Create savings goal',
+    'Tag {0} von {1}: {2} % des Monats sind vorbei, {3} % {4} ausgegeben.':
+        'Day {0} of {1}: {2} % of the month is over, {3} % {4} spent.',
+    'Wie das System':
+        'Same as system',
+    'deines Budgets':
+        'of your budget',
+    'eines üblichen Monats':
+        'of a typical month',
+    'heute':
+        'today',
+    'im Rahmen':
+        'on track',
+    'schneller als der Monat':
+        'faster than the month',
+    'von {0} · {1} %':
+        'of {0} · {1} %',
+    '{0} von {1}':
+        '{0} of {1}',
+    'Übersicht':
+        'Overview',
+    'über dem Rahmen':
+        'over the limit',
+    'Tabelle (CSV)':
+        'Spreadsheet (CSV)',
+    'Sicherung':
+        'Backup',
+    'Darstellung':
+        'Appearance',
 }

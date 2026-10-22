@@ -67,7 +67,7 @@ erhalten.
 Damit sich Plutos wie ein normales Programm per Klick aus dem Anwendungsmenü
 starten lässt, liegt ein Installationsskript bei.
 
-**Voraussetzung**: `main.py`, `db.py`, `icon.svg` und `install.sh` liegen alle
+**Voraussetzung**: `main.py`, `db.py`, `i18n.py`, `theme.py`, `icon.svg` und `install.sh` liegen alle
 im selben Ordner (z. B. `~/Downloads/plutos/`).
 
 ```bash
@@ -78,7 +78,7 @@ bash install.sh
 Das Skript
 
 1. prüft, ob die GTK3-Python-Bindings installiert sind,
-2. kopiert `main.py`, `db.py` und `icon.svg` nach `~/.local/share/plutos-app/`
+2. kopiert `main.py`, `db.py`, `i18n.py`, `theme.py` und `icon.svg` nach `~/.local/share/plutos-app/`
    (bewusst getrennt vom Datenordner `~/.local/share/plutos/`, in dem die
    Datenbank liegt),
 3. legt unter `~/.local/share/applications/plutos.desktop` einen Menüeintrag

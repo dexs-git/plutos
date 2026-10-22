@@ -243,3 +243,25 @@ def test_notgroschen_pocket_breakdown(store):
     store.add_contribution(gid, "2026-01-02", 200.0, create_transaction=True, goal_name="Notgroschen")
     bd = store.get_balance_breakdown()
     assert bd["giro"] == 800.0 and bd["pocket"] == 700.0 and bd["total"] == 1500.0
+
+
+def test_dashboard_data(store):
+    today = datetime.date(2026, 10, 21)
+    food, job = _cat(store, "Testessen"), _cat(store, "Testjob", "einnahme")
+    store.add_transaction("2026-07-05", -300.0, food, "a")
+    store.add_transaction("2026-08-05", -200.0, food, "b")
+    store.add_transaction("2026-10-02", 2000.0, job, "Gehalt")
+    store.add_transaction("2026-10-10", -120.0, food, "c")
+    store.add_transaction("2026-10-28", -80.0, food, "geplant")  # in der Zukunft
+    d = store.dashboard_data(today)
+    assert d["day"] == 21 and d["days_in_month"] == 31
+    assert d["income_sofar"] == 2000.0 and d["expense_sofar"] == 120.0
+    assert d["expense_planned"] == 200.0
+    # ohne Budget: Durchschnitt der Vormonate mit Ausgaben (Juli 300, August 200, September keine)
+    assert d["baseline_kind"] == "average" and d["baseline"] == 250.0
+    store.set_budget(food, "2026-10", 400.0)
+    d = store.dashboard_data(today)
+    assert d["baseline_kind"] == "budget" and d["baseline"] == 400.0
+    assert d["top_budgets"][0]["name"] == "Testessen" and d["top_budgets"][0]["spent"] == 200.0
+    assert d["recent"][0]["description"] == "c" and len(d["recent"]) <= 6
+    assert len(d["trend"]) == 6 and d["balance"] is None

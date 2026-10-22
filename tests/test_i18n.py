@@ -44,7 +44,7 @@ def test_translation_placeholders_and_tags_match(variant):
         assert tags(de) == tags(en), de
 
 
-@pytest.mark.parametrize("variant,files", [("qt", ["main.py", "dialogs.py", "charts.py"]), ("gtk", ["main.py"])])
+@pytest.mark.parametrize("variant,files", [("qt", ["main.py", "dialogs.py", "charts.py", "theme.py"]), ("gtk", ["main.py", "theme.py"])])
 def test_every_tr_key_has_english(variant, files):
     m = _load(variant)
     missing = []

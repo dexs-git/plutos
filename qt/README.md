@@ -12,7 +12,7 @@ Suche/Filter über alle Buchungen, Schnellbuchungs-Vorlagen, Rückgängig (Strg+
 und Budget-Warnungen ab 80 % / 100 %.
 
 Alle vier Programmdateien werden gebraucht und müssen im selben Ordner
-liegen: `main.py`, `db.py`, `charts.py`, `dialogs.py`, `i18n.py`.
+liegen: `main.py`, `db.py`, `charts.py`, `dialogs.py`, `i18n.py`, `theme.py`.
 
 ## Installation
 
@@ -90,7 +90,7 @@ startest, siehst du immer dieselben Buchungen.
 
 Allgemein gilt für alle drei Plattformen: **fehlende Programmdatei** (z. B.
 `ModuleNotFoundError: No module named 'charts'` o. Ä.) bedeutet, dass nicht
-alle fünf Dateien (`main.py`, `db.py`, `charts.py`, `dialogs.py`, `i18n.py`) im
+alle sechs Dateien (`main.py`, `db.py`, `charts.py`, `dialogs.py`, `i18n.py`, `theme.py`) im
 selben Ordner liegen – alle vier zusammen an einen Ort legen und erneut
 versuchen.
 

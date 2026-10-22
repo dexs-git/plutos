@@ -35,7 +35,7 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 gi.require_version("Pango", "1.0")
 gi.require_version("PangoCairo", "1.0")
-from gi.repository import Gtk, Gdk, Pango, PangoCairo
+from gi.repository import Gtk, Gdk, GLib, Pango, PangoCairo
 import cairo
 
 import datetime
@@ -43,6 +43,8 @@ import re
 import math
 
 from db import FinanceStore, add_months
+import theme
+from theme import make_card, make_link_button, ProgressRow, PaceBar, MiniTrend, NavIcon
 from i18n import tr, set_language, get_language, LANGUAGES, months, months_short, weekdays, weekdays_short
 
 CURRENCY = "€"
@@ -132,6 +134,24 @@ def _help_button(explanation):
     return button
 
 
+class ButtonRow(Gtk.Box):
+    """Button-Leiste aus mehreren Zeilen, damit schmale Spalten das Fenster
+    nicht verbreitern. Versteht pack_start() wie eine Gtk.Box;
+    break_line() beginnt eine neue Zeile."""
+
+    def __init__(self):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self._line = None
+        self.break_line()
+
+    def break_line(self):
+        self._line = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        Gtk.Box.pack_start(self, self._line, False, False, 0)
+
+    def pack_start(self, child, *_args):
+        self._line.pack_start(child, False, False, 0)
+
+
 def _nav_button(label_text, callback):
     """Erzeugt einen kompakten ◀/▶-Navigationsbutton. Wird an vier Stellen
     für die Vor-/Zurück-Navigation (Woche, Jahr, Kreisdiagramm-Monat,
@@ -164,7 +184,6 @@ class MainWindow(Gtk.Window):
     def __init__(self):
         super().__init__(title="Plutos – Das Haushaltsbuch")
         self.set_default_size(1050, 680)
-        self.set_border_width(10)
         self.store = FinanceStore()
         set_language(self.store.get_setting("language", "de"))
         self.set_title(tr("Plutos – Das Haushaltsbuch"))
@@ -179,22 +198,284 @@ class MainWindow(Gtk.Window):
         self.trend_months = 6
         self.current_etf_plan_id = None
 
-        notebook = Gtk.Notebook()
-        self.add(notebook)
-        self.notebook = notebook
+        self.set_border_width(0)
+        self.set_default_size(1300, 780)
+        theme.apply_theme(self.store.get_setting("theme", "system"))
 
-        notebook.append_page(self._build_transactions_tab(), Gtk.Label(label=tr('Buchungen')))
-        notebook.append_page(self._build_budgets_tab(), Gtk.Label(label=tr('Budgets')))
-        notebook.append_page(self._build_goals_tab(), Gtk.Label(label=tr('Sparziele')))
-        notebook.append_page(self._build_planning_tab(), Gtk.Label(label=tr('Finanzplanung')))
-        self.etf_tab_page = self._build_etf_tab()
-        notebook.append_page(self.etf_tab_page, Gtk.Label(label=tr('ETF-Sparplan')))
-        notebook.append_page(self._build_stats_tab(), Gtk.Label(label=tr('Auswertungen')))
-        notebook.append_page(self._build_search_tab(), Gtk.Label(label=tr('Suche')))
-        notebook.append_page(self._build_export_tab(), Gtk.Label(label=tr('Export / Import')))
+        self.stack = Gtk.Stack()
+        self.stack.set_transition_type(Gtk.StackTransitionType.NONE)
+        self.etf_tab_page = None
+        pages = [
+            ("overview", tr('Übersicht'), self._build_dashboard_tab),
+            ("bookings", tr('Buchungen'), self._build_transactions_tab),
+            ("budgets", tr('Budgets'), self._build_budgets_tab),
+            ("goals", tr('Sparziele'), self._build_goals_tab),
+            ("planning", tr('Finanzplanung'), self._build_planning_tab),
+            ("etf", tr('ETF-Sparplan'), self._build_etf_tab),
+            ("stats", tr('Auswertungen'), self._build_stats_tab),
+            ("search", tr('Suche'), self._build_search_tab),
+            ("export", tr('Export / Import'), self._build_export_tab),
+        ]
+        self.page_keys = [key for key, _label, _builder in pages]
+        for key, _label, builder in pages:
+            page = builder()
+            if key == "etf":
+                self.etf_tab_page = page
+            if key != "overview":
+                wrap = Gtk.Box()
+                for side in ("start", "end", "top", "bottom"):
+                    getattr(wrap, f"set_margin_{side}")(14)
+                wrap.pack_start(page, True, True, 0)
+                page = wrap
+            self.stack.add_named(page, key)
+
+        root = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        root.pack_start(self._build_sidebar(pages), False, False, 0)
+        root.pack_start(self.stack, True, True, 0)
+        self.add(root)
+        self.stack.connect("notify::visible-child-name", self._on_page_changed)
+        self._go_to("overview")
 
         self.connect("destroy", Gtk.main_quit)
         
+
+    # =====================================================================
+    # Seitenleiste und Übersichtsseite
+    # =====================================================================
+    def _build_sidebar(self, pages):
+        side = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        side.get_style_context().add_class("sidebar")
+        side.set_size_request(224, -1)
+        head = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        head.set_margin_start(14)
+        head.set_margin_top(16)
+        head.set_margin_bottom(14)
+        head.pack_start(theme.make_label("Plutos", "brand"), False, False, 0)
+        head.pack_start(theme.make_label(tr('Das Haushaltsbuch'), "muted"), False, False, 0)
+        side.pack_start(head, False, False, 0)
+
+        self.nav = Gtk.ListBox()
+        self.nav.get_style_context().add_class("nav")
+        self.nav.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        icons = {"overview": "overview", "bookings": "bookings", "budgets": "budgets",
+                 "goals": "goals", "planning": "planning", "etf": "etf", "stats": "stats",
+                 "search": "search", "export": "export"}
+        self.nav_icons = []
+        for key, label, _builder in pages:
+            row = Gtk.ListBoxRow()
+            row.page_key = key
+            box = Gtk.Box(spacing=12)
+            icon = NavIcon(icons[key], row)
+            self.nav_icons.append(icon)
+            box.pack_start(icon, False, False, 0)
+            box.pack_start(Gtk.Label(label=label, xalign=0.0), True, True, 0)
+            row.add(box)
+            self.nav.add(row)
+        self.nav.connect("row-selected", self._on_nav_row)
+        side.pack_start(self.nav, False, False, 0)
+        return side
+
+    def _on_nav_row(self, listbox, row):
+        for icon in self.nav_icons:
+            icon.queue_draw()
+        if row is not None and self.stack.get_visible_child_name() != row.page_key:
+            self.stack.set_visible_child_name(row.page_key)
+
+    def _go_to(self, key):
+        self.stack.set_visible_child_name(key)
+        self.nav.select_row(self.nav.get_row_at_index(self.page_keys.index(key)))
+        if key == "overview":
+            self._refresh_dashboard()
+
+    def _on_page_changed(self, stack, _param):
+        if stack.get_visible_child_name() == "overview":
+            self._refresh_dashboard()
+
+    def _build_dashboard_tab(self):
+        self.dashboard_scroll = Gtk.ScrolledWindow()
+        self.dashboard_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self.dashboard_holder = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.dashboard_scroll.add(self.dashboard_holder)
+        return self.dashboard_scroll
+
+    def _kpi_card(self, title, value, sub, value_class=None):
+        card, inner = make_card()
+        inner.pack_start(theme.make_label(title, "card-title"), False, False, 0)
+        v_label = theme.make_label(value, "kpi-value")
+        if value_class:
+            v_label.get_style_context().add_class(value_class)
+        inner.pack_start(v_label, False, False, 0)
+        s_label = theme.make_label(sub, "kpi-sub", wrap=True)
+        inner.pack_start(s_label, False, False, 0)
+        return card, inner
+
+    def _card_header(self, inner, title, link_text=None, link_key=None):
+        row = Gtk.Box()
+        row.pack_start(theme.make_label(title, "card-title"), True, True, 0)
+        if link_text:
+            row.pack_end(make_link_button(link_text, lambda: self._go_to(link_key)), False, False, 0)
+        inner.pack_start(row, False, False, 0)
+
+    def _refresh_dashboard(self):
+        if not hasattr(self, "dashboard_holder"):
+            return
+        for child in self.dashboard_holder.get_children():
+            child.destroy()
+        t = theme.current()
+        d = self.store.dashboard_data()
+        today = datetime.date.today()
+
+        grid = Gtk.Grid(column_spacing=14, row_spacing=14, column_homogeneous=True)
+        grid.set_margin_start(18)
+        grid.set_margin_end(18)
+        grid.set_margin_top(14)
+        grid.set_margin_bottom(18)
+        self.dashboard_holder.pack_start(grid, True, True, 0)
+
+        header = Gtk.Box(spacing=12)
+        header.pack_start(theme.make_label(tr('Übersicht'), "page-title"), False, False, 0)
+        month = theme.make_label(f"{months()[today.month - 1]} {today.year}", "muted")
+        month.set_valign(Gtk.Align.END)
+        month.set_margin_bottom(3)
+        header.pack_start(month, False, False, 0)
+        grid.attach(header, 0, 0, 6, 1)
+
+        # --- Kennzahlen ---------------------------------------------------
+        bd = d["balance"]
+        if bd is None:
+            card1, _ = self._kpi_card(tr('Kontostand'), "–",
+                                      tr('Kontostand in der Finanzplanung hinterlegen'))
+        elif d["pocket_enabled"]:
+            card1, _ = self._kpi_card(
+                tr('Gesamtvermögen'), fmt_amount(bd["total"]),
+                tr('Girokonto {0} · Notgroschen {1}').format(fmt_amount(bd["giro"]), fmt_amount(bd["pocket"])))
+        else:
+            card1, _ = self._kpi_card(tr('Kontostand'), fmt_amount(bd["giro"]), tr('Berechnet bis heute'))
+        grid.attach(card1, 0, 1, 2, 1)
+
+        saldo = d["income_sofar"] - d["expense_sofar"]
+        sub = tr('Einnahmen {0} · Ausgaben {1}').format(fmt_amount(d["income_sofar"]), fmt_amount(d["expense_sofar"]))
+        if d["expense_planned"] - d["expense_sofar"] > 0.005:
+            sub += "\n" + tr('Bis Monatsende geplant: {0} Ausgaben').format(
+                fmt_amount(d["expense_planned"] - d["expense_sofar"]))
+        card2, _ = self._kpi_card(tr('Saldo im {0}').format(months()[today.month - 1]),
+                                  fmt_amount(saldo), sub, "positive" if saldo >= 0 else "negative")
+        grid.attach(card2, 2, 1, 2, 1)
+
+        emergency = next((g for g in d["goals"] if g["name"] == "Notgroschen"), None)
+        if emergency and emergency["target"] > 0:
+            pct = emergency["current"] / emergency["target"] * 100
+            card3, inner3 = self._kpi_card(
+                tr('Notgroschen'), fmt_amount(emergency["current"]),
+                tr('von {0} · {1} %').format(fmt_amount(emergency["target"]), f"{pct:.0f}"))
+            inner3.pack_start(ProgressRow("", "", emergency["current"] / emergency["target"],
+                                          t["accent"]), False, False, 0)
+        else:
+            card3, inner3 = self._kpi_card(tr('Notgroschen'), "–", tr('Noch nicht eingerichtet'))
+            inner3.pack_start(make_link_button(tr('In der Finanzplanung einrichten'),
+                                               lambda: self._go_to("planning")), False, False, 0)
+        grid.attach(card3, 4, 1, 2, 1)
+
+        # --- Ausgabentempo ------------------------------------------------
+        pace, pl = make_card()
+        self._card_header(pl, tr('Ausgabentempo'))
+        elapsed = d["day"] / d["days_in_month"]
+        if d["baseline"]:
+            ratio = d["expense_sofar"] / d["baseline"]
+            basis = tr('deines Budgets') if d["baseline_kind"] == "budget" else tr('eines üblichen Monats')
+            if ratio <= elapsed + 0.05:
+                verdict, vclass = tr('im Rahmen'), "positive"
+            elif ratio <= 1.0:
+                verdict, vclass = tr('schneller als der Monat'), "warn"
+            else:
+                verdict, vclass = tr('über dem Rahmen'), "negative"
+            head = Gtk.Box(spacing=10)
+            head.pack_start(theme.make_label(
+                tr('{0} von {1}').format(fmt_amount(d["expense_sofar"]), fmt_amount(d["baseline"])),
+                "pace-amount"), False, False, 0)
+            chip = theme.make_label(verdict, vclass)
+            chip.set_markup(f"<b>{GLib.markup_escape_text(verdict)}</b>")
+            head.pack_start(chip, False, False, 0)
+            pl.pack_start(head, False, False, 0)
+            bar = PaceBar()
+            bar.set_values(ratio, elapsed)
+            pl.pack_start(bar, False, False, 0)
+            pl.pack_start(theme.make_label(
+                tr('Tag {0} von {1}: {2} % des Monats sind vorbei, {3} % {4} ausgegeben.').format(
+                    d["day"], d["days_in_month"], f"{elapsed * 100:.0f}", f"{ratio * 100:.0f}", basis),
+                "kpi-sub", wrap=True), False, False, 0)
+        else:
+            pl.pack_start(theme.make_label(
+                tr('Sobald Budgets gesetzt sind oder Buchungen aus Vormonaten vorliegen, zeigt Plutos hier, ob du im Rahmen bleibst.'),
+                "kpi-sub", wrap=True), False, False, 0)
+        grid.attach(pace, 0, 2, 6, 1)
+
+        # --- Budgets ------------------------------------------------------
+        bcard, bl = make_card(spacing=8)
+        self._card_header(bl, tr('Budgets im Monat'), tr('Alle ansehen'), "budgets")
+        if d["top_budgets"]:
+            for b in d["top_budgets"]:
+                color = {"over": t["negative"], "warn": t["warn"]}.get(b["level"], t["accent"])
+                bl.pack_start(ProgressRow(f"{b['icon']}  {b['name']}",
+                                          f"{fmt_amount(b['spent'])} / {fmt_amount(b['limit'])}",
+                                          b["spent"] / b["limit"], color), False, False, 0)
+        else:
+            bl.pack_start(theme.make_label(tr('Noch keine Budgets für diesen Monat.'), "kpi-sub"), False, False, 0)
+            bl.pack_start(make_link_button(tr('Budget setzen'), lambda: self._go_to("budgets")), False, False, 0)
+        grid.attach(bcard, 0, 3, 3, 1)
+
+        # --- Sparziele ----------------------------------------------------
+        gcard, gl = make_card(spacing=8)
+        self._card_header(gl, tr('Sparziele'), tr('Alle ansehen'), "goals")
+        goals = [g for g in d["goals"] if g["target"] > 0][:5]
+        if goals:
+            for g in goals:
+                gl.pack_start(ProgressRow(g["name"],
+                                          f"{fmt_amount(g['current'])} / {fmt_amount(g['target'])}",
+                                          g["current"] / g["target"], t["accent"]), False, False, 0)
+        else:
+            gl.pack_start(theme.make_label(tr('Noch keine Sparziele angelegt.'), "kpi-sub"), False, False, 0)
+            gl.pack_start(make_link_button(tr('Sparziel anlegen'), lambda: self._go_to("goals")), False, False, 0)
+        grid.attach(gcard, 3, 3, 3, 1)
+
+        # --- Verlauf ------------------------------------------------------
+        tcard, tl = make_card()
+        self._card_header(tl, tr('Letzte 6 Monate'), tr('Auswertungen'), "stats")
+        legend = theme.make_label("", "muted")
+        legend.set_markup(f'<span foreground="{t["positive"]}">■</span> {GLib.markup_escape_text(tr("Einnahmen"))}   '
+                          f'<span foreground="{t["accent"]}">■</span> {GLib.markup_escape_text(tr("Ausgaben"))}')
+        tl.pack_start(legend, False, False, 0)
+        trend = MiniTrend()
+        trend.set_rows([(months_short()[int(r["month"][5:]) - 1], r["income"], r["expense"],
+                         r["month"] == d["month"]) for r in d["trend"]])
+        tl.pack_start(trend, True, True, 0)
+        grid.attach(tcard, 0, 4, 3, 1)
+
+        # --- Letzte Buchungen ---------------------------------------------
+        rcard, rl = make_card(spacing=6)
+        self._card_header(rl, tr('Letzte Buchungen'), tr('Alle ansehen'), "bookings")
+        if d["recent"]:
+            for r in d["recent"]:
+                row = Gtk.Box(spacing=8)
+                day = datetime.date.fromisoformat(r["date"])
+                date_label = theme.make_label(f"{day.day:02d}.{day.month:02d}.", "muted")
+                date_label.set_size_request(46, -1)
+                text = (r["description"] or r["category_name"]).strip()
+                name = Gtk.Label(label=f"{r['icon']}  {text}", xalign=0.0)
+                name.set_ellipsize(Pango.EllipsizeMode.END)
+                amount = Gtk.Label(label=fmt_amount(r["amount"]), xalign=1.0)
+                if r["amount"] > 0:
+                    amount.get_style_context().add_class("positive")
+                row.pack_start(date_label, False, False, 0)
+                row.pack_start(name, True, True, 0)
+                row.pack_end(amount, False, False, 0)
+                rl.pack_start(row, False, False, 0)
+        else:
+            rl.pack_start(theme.make_label(tr('Noch keine Buchungen.'), "kpi-sub"), False, False, 0)
+            rl.pack_start(make_link_button(tr('Buchung hinzufügen'), lambda: self._go_to("bookings")), False, False, 0)
+        grid.attach(rcard, 3, 4, 3, 1)
+        self.dashboard_holder.show_all()
+
 # =====================================================================
 # Tab 1: Buchungen (Kalenderansicht)
 # =====================================================================
@@ -398,11 +679,11 @@ class MainWindow(Gtk.Window):
             # -----------------------------------------------------------
 
             if saldo > 0:
-                saldo_color = "#1e8c3d"
+                saldo_color = theme.current()["positive"]
             elif saldo < 0:
-                saldo_color = "#bf3826"
+                saldo_color = theme.current()["negative"]
             else:
-                saldo_color = "#888888"
+                saldo_color = theme.current()["muted"]
 
             # -----------------------------------------------------------
             # Grunddarstellung
@@ -423,7 +704,7 @@ class MainWindow(Gtk.Window):
 
                 markup = (
                     f"{d.day}\n"
-                    '<span foreground="#888888">–</span>'
+                    f'<span foreground="{theme.current()["muted"]}">–</span>'
                 )
 
             # -----------------------------------------------------------
@@ -435,7 +716,7 @@ class MainWindow(Gtk.Window):
                 if has_transactions:
 
                     markup = (
-                        '<span foreground="#1976d2">'
+                        f'<span foreground="{theme.current()["accent"]}">'
                         f"<b>{d.day}</b>"
                         "</span>\n"
                         f'<span foreground="{saldo_color}">'
@@ -446,10 +727,10 @@ class MainWindow(Gtk.Window):
                 else:
 
                     markup = (
-                        '<span foreground="#1976d2">'
+                        f'<span foreground="{theme.current()["accent"]}">'
                         f"<b>{d.day}</b>"
                         "</span>\n"
-                        '<span foreground="#888888">–</span>'
+                        f'<span foreground="{theme.current()["muted"]}">–</span>'
                     )
 
             # -----------------------------------------------------------
@@ -461,7 +742,7 @@ class MainWindow(Gtk.Window):
                 if has_transactions:
 
                     markup = (
-                        '<span background="#1976d2" foreground="white">'
+                        f'<span background="{theme.current()["accent"]}" foreground="{theme.current()["accent_text"]}">'
                         f"<b>{d.day}</b>"
                         "</span>\n"
                         f'<span foreground="{saldo_color}">'
@@ -472,10 +753,10 @@ class MainWindow(Gtk.Window):
                 else:
 
                     markup = (
-                        '<span background="#1976d2" foreground="white">'
+                        f'<span background="{theme.current()["accent"]}" foreground="{theme.current()["accent_text"]}">'
                         f"<b>{d.day}</b>"
                         "</span>\n"
-                        '<span foreground="#888888">–</span>'
+                        f'<span foreground="{theme.current()["muted"]}">–</span>'
                     )
 
             label.set_markup(markup)
@@ -696,7 +977,7 @@ class MainWindow(Gtk.Window):
             spacing=10
         )
 
-        root.set_border_width(8)
+        root.set_border_width(0)
 
         # ================================================================
         # LINKE SEITE
@@ -1400,6 +1681,8 @@ class MainWindow(Gtk.Window):
             ),
             xalign=0
         )
+        hint.set_line_wrap(True)
+        hint.set_max_width_chars(10)
 
         right_box.pack_start(
             hint,
@@ -1412,10 +1695,7 @@ class MainWindow(Gtk.Window):
         # BUTTONS
         # ================================================================
 
-        btn_box = Gtk.Box(
-            orientation=Gtk.Orientation.HORIZONTAL,
-            spacing=5
-        )
+        btn_box = ButtonRow()
 
         right_box.pack_start(
             btn_box,
@@ -1497,6 +1777,7 @@ class MainWindow(Gtk.Window):
             self._on_manage_recurring
         )
 
+        btn_box.break_line()
         btn_box.pack_start(
             rec_btn,
             False,
@@ -1508,8 +1789,7 @@ class MainWindow(Gtk.Window):
         # Zweite Reihe: Rückgängig, Vorlagen
         # ------------------------------------------------
 
-        btn_box2 = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
-        right_box.pack_start(btn_box2, False, False, 0)
+        btn_box2 = btn_box
 
         self.undo_btn = Gtk.Button(label=tr('Rückgängig'))
         self.undo_btn.set_tooltip_text(tr('Zuletzt gelöschte Buchung wiederherstellen (Strg+Z)'))
@@ -1520,6 +1800,7 @@ class MainWindow(Gtk.Window):
         save_tpl_btn = Gtk.Button(label=tr('Als Vorlage speichern'))
         save_tpl_btn.set_tooltip_text(tr('Die markierte Buchung als Schnellbuchungs-Vorlage merken'))
         save_tpl_btn.connect("clicked", self._on_save_quick_template)
+        btn_box2.break_line()
         btn_box2.pack_start(save_tpl_btn, False, False, 0)
 
         use_tpl_btn = Gtk.Button(label=tr('Aus Vorlage buchen…'))
@@ -1884,9 +2165,9 @@ class MainWindow(Gtk.Window):
             if rows:
 
                 color = (
-                    "#1e8c3d"
+                    theme.current()["positive"]
                     if saldo >= 0
-                    else "#bf3826"
+                    else theme.current()["negative"]
                 )
 
                 saldo_text = fmt_amount(
@@ -1895,7 +2176,7 @@ class MainWindow(Gtk.Window):
 
             else:
 
-                color = "#888888"
+                color = theme.current()["muted"]
                 saldo_text = "–"
 
             today_marker = (
@@ -2100,14 +2381,14 @@ class MainWindow(Gtk.Window):
             if has_data:
 
                 color = (
-                    "#1e8c3d"
+                    theme.current()["positive"]
                     if saldo >= 0
-                    else "#bf3826"
+                    else theme.current()["negative"]
                 )
 
             else:
 
-                color = "#888888"
+                color = theme.current()["muted"]
 
             text = (
                 fmt_amount(saldo)
@@ -2272,9 +2553,9 @@ class MainWindow(Gtk.Window):
 
         cell.set_property(
             "foreground",
-            "#1e8e3e"
+            theme.current()["positive"]
             if value >= 0
-            else "#c0392b"
+            else theme.current()["negative"]
         )
 
 
@@ -2612,7 +2893,7 @@ class MainWindow(Gtk.Window):
                 self.budget_store.append([
                     r["category_id"], label, fmt_amount(limit_amount),
                     fmt_amount(spent), fmt_amount(remaining), fraction,
-                    color or "#000000", bool(color), f"{marker}{percent:.0f} %",
+                    color or theme.current()["text"], True, f"{marker}{percent:.0f} %",
                 ])
 
     def _on_set_budget(self, widget):
@@ -3165,7 +3446,7 @@ class MainWindow(Gtk.Window):
         if amount <= 0:
             return
         self.etf_amount_spin.set_value(amount)
-        self.notebook.set_current_page(self.notebook.page_num(self.etf_tab_page))
+        self._go_to("etf")
 
     def _on_apply_capital_to_notgroschen(self, widget):
         if not self._current_recommendation:
@@ -4919,72 +5200,82 @@ class MainWindow(Gtk.Window):
     # =====================================================================
 
     def _build_export_tab(self):
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-        box.set_border_width(10)
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+        outer.set_margin_end(4)
+        scroll.add(outer)
 
-        csv_label = Gtk.Label(
-            xalign=0,
-            label=tr('CSV-Export aller Buchungen – zum Öffnen/Weiterverarbeiten in Excel oder LibreOffice Calc.')
-        )
-        csv_label.set_line_wrap(True)
-        box.pack_start(csv_label, False, False, 0)
+        def section(title):
+            card, inner = make_card(spacing=8)
+            inner.pack_start(theme.make_label(title, "card-title"), False, False, 0)
+            outer.pack_start(card, False, False, 0)
+            return inner
 
-        csv_btn = Gtk.Button(label=tr('Buchungen als CSV exportieren…'))
-        csv_btn.connect("clicked", self._on_export_csv)
-        box.pack_start(csv_btn, False, False, 0)
+        def text(box, content):
+            label = Gtk.Label(label=content, xalign=0.0)
+            label.set_line_wrap(True)
+            label.set_max_width_chars(10)
+            label.set_hexpand(True)
+            box.pack_start(label, False, False, 0)
 
-        csv_import_label = Gtk.Label(
-            xalign=0,
-            label=tr("CSV-Import: Buchungen aus einer anderen Haushaltsbuch- oder Banking-Software übernehmen. Trennzeichen (';' oder ',') sowie deutsche/englische Zahlen- und Datumsformate werden automatisch erkannt. Erwartet werden Spalten für Datum und Betrag (z. B. 'Datum'/'Date', 'Betrag'/'Amount'); Kategorie, Art und Beschreibung sind optional – unbekannte Kategorien werden automatisch angelegt.")
-        )
-        csv_import_label.set_line_wrap(True)
-        box.pack_start(csv_import_label, False, False, 0)
+        def button(box, label, callback):
+            btn = Gtk.Button(label=label)
+            btn.set_halign(Gtk.Align.START)
+            btn.connect("clicked", callback)
+            box.pack_start(btn, False, False, 0)
+            return btn
 
-        csv_import_btn = Gtk.Button(label=tr('Buchungen aus CSV importieren…'))
-        csv_import_btn.connect("clicked", self._on_import_csv)
-        box.pack_start(csv_import_btn, False, False, 0)
+        box = section(tr('Tabelle (CSV)'))
+        text(box, tr('CSV-Export aller Buchungen – zum Öffnen/Weiterverarbeiten in Excel oder LibreOffice Calc.'))
+        button(box, tr('Buchungen als CSV exportieren…'), self._on_export_csv)
+        text(box, tr("CSV-Import: Buchungen aus einer anderen Haushaltsbuch- oder Banking-Software übernehmen. Trennzeichen (';' oder ',') sowie deutsche/englische Zahlen- und Datumsformate werden automatisch erkannt. Erwartet werden Spalten für Datum und Betrag (z. B. 'Datum'/'Date', 'Betrag'/'Amount'); Kategorie, Art und Beschreibung sind optional – unbekannte Kategorien werden automatisch angelegt."))
+        button(box, tr('Buchungen aus CSV importieren…'), self._on_import_csv)
 
-        sep = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
-        box.pack_start(sep, False, False, 8)
+        box = section(tr('Sicherung'))
+        text(box, tr('Vollständiges Backup (JSON) – enthält alle Buchungen, Vorlagen, Budgets, Sparziele, ETF-Pläne und Kategorien (inkl. Icons). Zum Sichern oder Übertragen auf einen anderen Rechner mit diesem Programm.'))
+        row = Gtk.Box(spacing=8)
+        button(row, tr('Backup als JSON exportieren…'), self._on_export_json)
+        button(row, tr('Backup aus JSON importieren…'), self._on_import_json)
+        box.pack_start(row, False, False, 0)
+        text(box, tr('Automatische Sicherung: Beim ersten Start eines Tages legt Plutos eine Kopie der Datenbank in {0} an (die letzten {1} bleiben erhalten).').format(self.store.backup_dir, self.store.BACKUP_KEEP))
+        button(box, tr('Datenbank jetzt sichern'), self._on_backup_now)
 
-        json_label = Gtk.Label(
-            xalign=0,
-            label=tr('Vollständiges Backup (JSON) – enthält alle Buchungen, Vorlagen, Budgets, Sparziele, ETF-Pläne und Kategorien (inkl. Icons). Zum Sichern oder Übertragen auf einen anderen Rechner mit diesem Programm.')
-        )
-        json_label.set_line_wrap(True)
-        box.pack_start(json_label, False, False, 0)
-
-        export_json_btn = Gtk.Button(label=tr('Backup als JSON exportieren…'))
-        export_json_btn.connect("clicked", self._on_export_json)
-        box.pack_start(export_json_btn, False, False, 0)
-
-        import_json_btn = Gtk.Button(label=tr('Backup aus JSON importieren…'))
-        import_json_btn.connect("clicked", self._on_import_json)
-        box.pack_start(import_json_btn, False, False, 0)
-
-        backup_label = Gtk.Label(
-            label=tr('Automatische Sicherung: Beim ersten Start eines Tages legt Plutos eine Kopie der Datenbank in {0} an (die letzten {1} bleiben erhalten).').format(self.store.backup_dir, self.store.BACKUP_KEEP),
-            xalign=0)
-        backup_label.set_line_wrap(True)
-        box.pack_start(backup_label, False, False, 0)
-        backup_btn = Gtk.Button(label=tr('Datenbank jetzt sichern'))
-        backup_btn.connect("clicked", self._on_backup_now)
-        box.pack_start(backup_btn, False, False, 0)
-
-        lang_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        lang_row.pack_start(Gtk.Label(label="Sprache / Language:", xalign=0), False, False, 0)
+        box = section(tr('Darstellung'))
+        grid = Gtk.Grid(column_spacing=12, row_spacing=8)
+        grid.attach(Gtk.Label(label="Sprache / Language:", xalign=0.0), 0, 0, 1, 1)
         self.language_combo = Gtk.ComboBoxText()
         for code, name in LANGUAGES.items():
             self.language_combo.append(code, name)
         self.language_combo.set_active_id(get_language())
         self.language_combo.connect("changed", self._on_language_changed)
-        lang_row.pack_start(self.language_combo, False, False, 0)
-        box.pack_start(lang_row, False, False, 0)
+        self.language_combo.set_halign(Gtk.Align.START)
+        grid.attach(self.language_combo, 1, 0, 1, 1)
+        grid.attach(Gtk.Label(label=tr('Darstellung:'), xalign=0.0), 0, 1, 1, 1)
+        self.theme_combo = Gtk.ComboBoxText()
+        for key, label in (("system", tr('Wie das System')), ("light", tr('Hell')), ("dark", tr('Dunkel'))):
+            self.theme_combo.append(key, label)
+        self.theme_combo.set_active_id(self.store.get_setting("theme", "system"))
+        self.theme_combo.connect("changed", self._on_theme_changed)
+        self.theme_combo.set_halign(Gtk.Align.START)
+        grid.attach(self.theme_combo, 1, 1, 1, 1)
+        box.pack_start(grid, False, False, 0)
 
-        self.export_status_label = Gtk.Label(label="", xalign=0)
-        box.pack_start(self.export_status_label, False, False, 0)
+        self.export_status_label = Gtk.Label(label="", xalign=0.0)
+        self.export_status_label.set_line_wrap(True)
+        self.export_status_label.set_max_width_chars(10)
+        outer.pack_start(self.export_status_label, False, False, 0)
+        return scroll
 
-        return box
+    def _on_theme_changed(self, combo):
+        mode = combo.get_active_id()
+        if mode:
+            self.store.set_setting("theme", mode)
+            theme.apply_theme(mode)  # wirkt sofort auf das ganze Programm
+            self._refresh_dashboard()
+            self.queue_draw()
+            self.export_status_label.set_text(
+                tr('Die Darstellung wird nach einem Neustart vollständig übernommen.'))
 
     def _on_language_changed(self, combo):
         code = combo.get_active_id()

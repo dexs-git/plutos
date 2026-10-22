@@ -1,7 +1,7 @@
 # Plutos – Das Haushaltsbuch
 
 <p align="center">
-  <img src="docs/screenshots/01-buchungen.png" alt="Plutos – Kalenderansicht der Buchungen" width="720">
+  <img src="docs/screenshots/13-uebersicht-dunkel.png" alt="Plutos – Übersichtsseite (dunkles Design)" width="720">
 </p>
 
 Plutos ist ein Haushaltsbuch für den Desktop, benannt nach dem griechischen
@@ -58,6 +58,12 @@ Datenbank-Logik teilen:
   (Simulation, keine Anlageempfehlung)
 - **Notgroschen als Unterkonto** (optional): Girokonto und Notgroschen werden
   getrennt ausgewiesen, ohne dass gebuchte Sparbeiträge doppelt zählen
+- **Modernes Design**: Seitenleiste mit Icons, eine **Übersichtsseite**
+  (Gesamtvermögen, Monatssaldo, Notgroschen, Ausgabentempo, Budgets, Sparziele,
+  Trend der letzten Monate, letzte Buchungen) sowie ein **helles und dunkles
+  Design** – folgt dem System oder wird im Tab „Export / Import“ gewählt
+  (GTK: wirkt sofort, Qt: nach einem Neustart). Qt- und GTK-Version sehen
+  dadurch gleich aus.
 - **Deutsch und Englisch**: Sprache im Tab „Export / Import“ wählbar
   (Neustart nötig); alle Beschriftungen, Hinweise und Meldungen sind übersetzt.
   Eigene Kategorienamen und die beim ersten Start angelegten Standardkategorien
@@ -90,6 +96,10 @@ bei Updates erhalten.
 Linux zusätzlich `bash packaging/build-appimage.sh <Version>`.
 
 ## Screenshots
+
+| | |
+|---|---|
+| ![Übersicht dunkel](docs/screenshots/13-uebersicht-dunkel.png) | ![Übersicht hell](docs/screenshots/14-uebersicht-hell.png) |
 
 | | |
 |---|---|

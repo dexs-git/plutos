@@ -33,12 +33,17 @@ from PySide6.QtWidgets import (
     QCheckBox, QLineEdit, QTableWidget, QTableWidgetItem, QHeaderView,
     QAbstractItemView, QCalendarWidget, QScrollArea, QStackedWidget, QFileDialog,
     QMessageBox, QGroupBox, QProgressBar, QSizePolicy, QDateEdit, QInputDialog,
+    QListWidget, QListWidgetItem, QFrame,
 )
-from PySide6.QtCore import Qt, QDate
+from PySide6.QtCore import Qt, QDate, QSize, QLocale
 from PySide6.QtGui import QIcon, QColor, QTextCharFormat, QPalette, QShortcut, QKeySequence
 
 from db import FinanceStore, add_months
 from i18n import tr, set_language, get_language, LANGUAGES, months, months_short, weekdays, weekdays_short
+import theme
+from theme import (
+    make_card, make_icon, make_link_button, set_role, ProgressRow, PaceBar, MiniTrend, BarCell,
+)
 from charts import (
     PieChartWidget, TrendChartWidget, SankeyWidget, EtfComparisonWidget,
     CategoryCompareWidget, CategoryYearWidget, YearCompareWidget, format_delta,
@@ -91,13 +96,24 @@ def _themed_hint_html(html, palette):
 # Hauptfenster
 # ---------------------------------------------------------------------------
 
+class PageTabs(QTabWidget):
+    """Seitenstapel ohne eigene Tab-Leiste – umgeschaltet wird über die
+    Seitenleiste (siehe MainWindow._build_sidebar)."""
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("pages")
+        self.tabBar().hide()
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.resize(1080, 700)
+        self.resize(1180, 760)
 
         self.store = FinanceStore()
         set_language(self.store.get_setting("language", "de"))
+        theme.apply_theme(QApplication.instance(), self.store.get_setting("theme", "system"))
         self.setWindowTitle(tr('Plutos – Das Haushaltsbuch'))
         self.store.ensure_horizon(datetime.date.today())
         try:  # tägliches automatisches Datenbank-Backup; darf den Start nie verhindern
@@ -111,24 +127,342 @@ class MainWindow(QMainWindow):
         self.current_etf_plan_id = None
         self._current_recommendation = None
 
-        self.tabs = QTabWidget()
-        self.setCentralWidget(self.tabs)
+        self.tabs = PageTabs()
+        self.tab_index = {}
+        pages = [
+            ("overview", tr('Übersicht'), self._build_dashboard_tab),
+            ("bookings", tr('Buchungen'), self._build_transactions_tab),
+            ("budgets", tr('Budgets'), self._build_budgets_tab),
+            ("goals", tr('Sparziele'), self._build_goals_tab),
+            ("planning", tr('Finanzplanung'), self._build_planning_tab),
+            ("etf", tr('ETF-Sparplan'), self._build_etf_tab),
+            ("stats", tr('Auswertungen'), self._build_stats_tab),
+            ("search", tr('Suche'), self._build_search_tab),
+            ("export", tr('Export / Import'), self._build_export_tab),
+        ]
+        self._nav_entries = []
+        for key, title, builder in pages:
+            self.tab_index[key] = self.tabs.count()
+            if key == "etf":
+                self.etf_tab_index = self.tabs.count()
+            self.tabs.addTab(builder(), title)
+            self._nav_entries.append((key, title))
 
-        self.tabs.addTab(self._build_transactions_tab(), tr('Buchungen'))
-        self.tabs.addTab(self._build_budgets_tab(), tr('Budgets'))
-        self.tabs.addTab(self._build_goals_tab(), tr('Sparziele'))
-        self.tabs.addTab(self._build_planning_tab(), tr('Finanzplanung'))
-        self.etf_tab_index = self.tabs.count()
-        self.tabs.addTab(self._build_etf_tab(), tr('ETF-Sparplan'))
-        self.tabs.addTab(self._build_stats_tab(), tr('Auswertungen'))
-        self.tabs.addTab(self._build_search_tab(), tr('Suche'))
-        self.tabs.addTab(self._build_export_tab(), tr('Export / Import'))
+        root = QWidget()
+        root_layout = QHBoxLayout(root)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+        root_layout.addWidget(self._build_sidebar())
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(14, 12, 14, 12)
+        content_layout.addWidget(self.tabs)
+        root_layout.addWidget(content, 1)
+        self.setCentralWidget(root)
+        self.tabs.currentChanged.connect(self._on_page_changed)
+        self._refresh_dashboard()
+
+        # Zahlenfelder in Formularen linksbündig statt über die ganze Breite.
+        for container in [self] + self.findChildren(QWidget):
+            grid_layout = container.layout()
+            if isinstance(grid_layout, QGridLayout):
+                for i in range(grid_layout.count()):
+                    item = grid_layout.itemAt(i)
+                    if isinstance(item.widget(), (QSpinBox, QDoubleSpinBox, QDateEdit)):
+                        item.setAlignment(Qt.AlignLeft)
+
+        for table in self.findChildren(QTableWidget):
+            table.verticalHeader().setVisible(False)
+            table.verticalHeader().setDefaultSectionSize(38)
+            table.setShowGrid(False)
+            table.setFocusPolicy(Qt.NoFocus)
+        self.goal_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Fixed)
+        self.goal_table.setColumnWidth(4, 190)
+
+        # Wichtigste Aktionen farblich hervorheben (Primär-Buttons).
+        primary_labels = {tr(x) for x in (
+            'Speichern', 'Hinzufügen', 'Buchung hinzufügen', 'Empfehlung berechnen',
+            'Berechnen & Speichern', 'Ziel hinzufügen', 'Einzahlen', 'Suchen')}
+        for btn in self.findChildren(QPushButton):
+            if btn.text().replace("&&", "&") in primary_labels:
+                btn.setProperty("primary", True)
+        for btn in self.findChildren(QPushButton):
+            if btn.text() in ("◀", "▶"):
+                btn.setProperty("nav", True)
 
         # Feste (dunkel gewählte) Hinweisfarben an das aktuelle Theme anpassen.
         for label in self.findChildren(QLabel):
             html = label.text()
             if "#aeb6c0" in html or "#c8ced6" in html or "#d8dee9" in html:
                 label.setText(_themed_hint_html(html, label.palette()))
+
+    # =====================================================================
+    # Seitenleiste
+    # =====================================================================
+
+    def _build_sidebar(self):
+        t = theme.current()
+        bar = QFrame()
+        bar.setObjectName("sidebar")
+        bar.setFixedWidth(224)
+        layout = QVBoxLayout(bar)
+        layout.setContentsMargins(14, 20, 14, 14)
+        layout.setSpacing(2)
+        brand = QLabel("Plutos")
+        brand.setObjectName("brand")
+        sub = QLabel(tr('Das Haushaltsbuch'))
+        sub.setObjectName("brandSub")
+        layout.addWidget(brand)
+        layout.addWidget(sub)
+        layout.addSpacing(16)
+
+        self.nav = QListWidget()
+        self.nav.setObjectName("nav")
+        self.nav.setIconSize(QSize(20, 20))
+        self.nav.setFocusPolicy(Qt.NoFocus)
+        self._nav_icon_names = [key for key, _ in self._nav_entries]
+        for key, title in self._nav_entries:
+            item = QListWidgetItem(make_icon(key, t["muted"]), "  " + title)
+            self.nav.addItem(item)
+        self.nav.setCurrentRow(0)
+        self.nav.currentRowChanged.connect(self._on_nav_row)
+        self._update_nav_icons()
+        layout.addWidget(self.nav, 1)
+        return bar
+
+    def _update_nav_icons(self):
+        t = theme.current()
+        for i, key in enumerate(self._nav_icon_names):
+            color = t["accent"] if i == self.nav.currentRow() else t["muted"]
+            self.nav.item(i).setIcon(make_icon(key, color))
+
+    def _on_nav_row(self, row):
+        if row >= 0:
+            self.tabs.setCurrentIndex(row)
+        self._update_nav_icons()
+
+    def _on_page_changed(self, index):
+        if self.nav.currentRow() != index:
+            self.nav.setCurrentRow(index)
+        if index == self.tab_index["overview"]:
+            self._refresh_dashboard()
+
+    def _go_to(self, key):
+        self.tabs.setCurrentIndex(self.tab_index[key])
+
+    # =====================================================================
+    # Tab 0: Übersicht
+    # =====================================================================
+
+    def _build_dashboard_tab(self):
+        self.dashboard_scroll = QScrollArea()
+        self.dashboard_scroll.setWidgetResizable(True)
+        return self.dashboard_scroll
+
+    def _kpi_card(self, title, value, sub, value_color=None):
+        card, lay = make_card()
+        t_label = QLabel(title)
+        t_label.setObjectName("cardTitle")
+        v_label = QLabel(value)
+        v_label.setObjectName("kpiValue")
+        if value_color:
+            v_label.setStyleSheet(f"color: {value_color};")
+        s_label = QLabel(sub)
+        s_label.setObjectName("kpiSub")
+        s_label.setWordWrap(True)
+        lay.addWidget(t_label)
+        lay.addWidget(v_label)
+        lay.addWidget(s_label)
+        lay.addStretch()
+        return card, lay
+
+    def _card_header(self, lay, title, link_text=None, link_key=None):
+        row = QHBoxLayout()
+        t_label = QLabel(title)
+        t_label.setObjectName("cardTitle")
+        row.addWidget(t_label, 1)
+        if link_text:
+            row.addWidget(make_link_button(link_text, lambda: self._go_to(link_key)))
+        lay.addLayout(row)
+
+    def _refresh_dashboard(self):
+        if not hasattr(self, "dashboard_scroll"):
+            return
+        t = theme.current()
+        d = self.store.dashboard_data()
+        today = datetime.date.today()
+
+        content = QWidget()
+        grid = QGridLayout(content)
+        grid.setContentsMargins(4, 4, 8, 8)
+        grid.setHorizontalSpacing(14)
+        grid.setVerticalSpacing(14)
+        for col in range(6):
+            grid.setColumnStretch(col, 1)
+
+        header = QHBoxLayout()
+        title = QLabel(tr('Übersicht'))
+        title.setObjectName("pageTitle")
+        header.addWidget(title)
+        month_label = QLabel(f"{months()[today.month - 1]} {today.year}")
+        month_label.setObjectName("muted")
+        header.addWidget(month_label, 0, Qt.AlignBottom)
+        header.addStretch()
+        grid.addLayout(header, 0, 0, 1, 6)
+
+        # --- Kennzahlen ---------------------------------------------------
+        bd = d["balance"]
+        if bd is None:
+            card1, _ = self._kpi_card(tr('Kontostand'), "–",
+                                      tr('Kontostand in der Finanzplanung hinterlegen'))
+        elif d["pocket_enabled"]:
+            card1, _ = self._kpi_card(
+                tr('Gesamtvermögen'), fmt_amount(bd["total"]),
+                tr('Girokonto {0} · Notgroschen {1}').format(fmt_amount(bd["giro"]), fmt_amount(bd["pocket"])))
+        else:
+            card1, _ = self._kpi_card(tr('Kontostand'), fmt_amount(bd["giro"]), tr('Berechnet bis heute'))
+        grid.addWidget(card1, 1, 0, 1, 2)
+
+        saldo = d["income_sofar"] - d["expense_sofar"]
+        sub = tr('Einnahmen {0} · Ausgaben {1}').format(fmt_amount(d["income_sofar"]), fmt_amount(d["expense_sofar"]))
+        if d["expense_planned"] - d["expense_sofar"] > 0.005:
+            sub += "\n" + tr('Bis Monatsende geplant: {0} Ausgaben').format(
+                fmt_amount(d["expense_planned"] - d["expense_sofar"]))
+        card2, _ = self._kpi_card(tr('Saldo im {0}').format(months()[today.month - 1]),
+                                  fmt_amount(saldo), sub,
+                                  t["positive"] if saldo >= 0 else t["negative"])
+        grid.addWidget(card2, 1, 2, 1, 2)
+
+        emergency = next((g for g in d["goals"] if g["name"] == "Notgroschen"), None)
+        if emergency and emergency["target"] > 0:
+            pct = emergency["current"] / emergency["target"] * 100
+            card3, lay3 = self._kpi_card(
+                tr('Notgroschen'), fmt_amount(emergency["current"]),
+                tr('von {0} · {1} %').format(fmt_amount(emergency["target"]), f"{pct:.0f}"))
+            bar = ProgressRow("", "", emergency["current"] / emergency["target"], t["accent"])
+            lay3.insertWidget(lay3.count() - 1, bar)
+        else:
+            card3, lay3 = self._kpi_card(tr('Notgroschen'), "–", tr('Noch nicht eingerichtet'))
+            lay3.insertWidget(lay3.count() - 1,
+                              make_link_button(tr('In der Finanzplanung einrichten'),
+                                               lambda: self._go_to("planning")))
+        grid.addWidget(card3, 1, 4, 1, 2)
+
+        # --- Ausgabentempo -----------------------------------------------
+        pace, pl = make_card()
+        self._card_header(pl, tr('Ausgabentempo'))
+        elapsed = d["day"] / d["days_in_month"]
+        if d["baseline"]:
+            ratio = d["expense_sofar"] / d["baseline"]
+            basis = tr('deines Budgets') if d["baseline_kind"] == "budget" else tr('eines üblichen Monats')
+            if ratio <= elapsed + 0.05:
+                verdict, vcolor = tr('im Rahmen'), t["positive"]
+            elif ratio <= 1.0:
+                verdict, vcolor = tr('schneller als der Monat'), t["warn"]
+            else:
+                verdict, vcolor = tr('über dem Rahmen'), t["negative"]
+            head = QHBoxLayout()
+            amount = QLabel(tr('{0} von {1}').format(fmt_amount(d["expense_sofar"]), fmt_amount(d["baseline"])))
+            amount.setStyleSheet("font-size: 18px; font-weight: 600;")
+            head.addWidget(amount)
+            chip = QLabel(verdict)
+            chip.setStyleSheet(f"color: {vcolor}; font-weight: 600;")
+            head.addWidget(chip)
+            head.addStretch()
+            pl.addLayout(head)
+            bar = PaceBar()
+            bar.set_values(ratio, elapsed)
+            pl.addWidget(bar)
+            note = QLabel(tr('Tag {0} von {1}: {2} % des Monats sind vorbei, {3} % {4} ausgegeben.').format(
+                d["day"], d["days_in_month"], f"{elapsed * 100:.0f}", f"{ratio * 100:.0f}", basis))
+            note.setObjectName("kpiSub")
+            note.setWordWrap(True)
+            pl.addWidget(note)
+        else:
+            hint = QLabel(tr('Sobald Budgets gesetzt sind oder Buchungen aus Vormonaten vorliegen, zeigt Plutos hier, ob du im Rahmen bleibst.'))
+            hint.setObjectName("kpiSub")
+            hint.setWordWrap(True)
+            pl.addWidget(hint)
+        grid.addWidget(pace, 2, 0, 1, 6)
+
+        # --- Budgets ------------------------------------------------------
+        bcard, bl = make_card()
+        self._card_header(bl, tr('Budgets im Monat'), tr('Alle ansehen'), "budgets")
+        if d["top_budgets"]:
+            for b in d["top_budgets"]:
+                color = {"over": t["negative"], "warn": t["warn"]}.get(b["level"], t["accent"])
+                bl.addWidget(ProgressRow(f"{b['icon']}  {b['name']}",
+                                         f"{fmt_amount(b['spent'])} / {fmt_amount(b['limit'])}",
+                                         b["spent"] / b["limit"], color))
+        else:
+            empty = QLabel(tr('Noch keine Budgets für diesen Monat.'))
+            empty.setObjectName("kpiSub")
+            bl.addWidget(empty)
+            bl.addWidget(make_link_button(tr('Budget setzen'), lambda: self._go_to("budgets")))
+        bl.addStretch()
+        grid.addWidget(bcard, 3, 0, 1, 3)
+
+        # --- Sparziele ----------------------------------------------------
+        gcard, gl = make_card()
+        self._card_header(gl, tr('Sparziele'), tr('Alle ansehen'), "goals")
+        goals = [g for g in d["goals"] if g["target"] > 0][:5]
+        if goals:
+            for g in goals:
+                gl.addWidget(ProgressRow(g["name"],
+                                         f"{fmt_amount(g['current'])} / {fmt_amount(g['target'])}",
+                                         g["current"] / g["target"], t["accent"]))
+        else:
+            empty = QLabel(tr('Noch keine Sparziele angelegt.'))
+            empty.setObjectName("kpiSub")
+            gl.addWidget(empty)
+            gl.addWidget(make_link_button(tr('Sparziel anlegen'), lambda: self._go_to("goals")))
+        gl.addStretch()
+        grid.addWidget(gcard, 3, 3, 1, 3)
+
+        # --- Verlauf ------------------------------------------------------
+        tcard, tl = make_card()
+        self._card_header(tl, tr('Letzte 6 Monate'), tr('Auswertungen'), "stats")
+        legend = QLabel(f'<span style="color:{t["positive"]}">■</span> {tr("Einnahmen")}&nbsp;&nbsp;'
+                        f'<span style="color:{t["accent"]}">■</span> {tr("Ausgaben")}')
+        legend.setObjectName("muted")
+        tl.addWidget(legend)
+        trend = MiniTrend()
+        trend.set_rows([(months_short()[int(r["month"][5:]) - 1], r["income"], r["expense"],
+                         r["month"] == d["month"]) for r in d["trend"]])
+        tl.addWidget(trend, 1)
+        grid.addWidget(tcard, 4, 0, 1, 3)
+
+        # --- Letzte Buchungen ---------------------------------------------
+        rcard, rl = make_card()
+        self._card_header(rl, tr('Letzte Buchungen'), tr('Alle ansehen'), "bookings")
+        if d["recent"]:
+            for r in d["recent"]:
+                row = QHBoxLayout()
+                day = datetime.date.fromisoformat(r["date"])
+                date_label = QLabel(f"{day.day:02d}.{day.month:02d}.")
+                date_label.setObjectName("muted")
+                date_label.setFixedWidth(46)
+                text = (r["description"] or r["category_name"]).strip()
+                name = QLabel(f"{r['icon']}  {text}")
+                name.setMinimumWidth(10)
+                amount = QLabel(fmt_amount(r["amount"]))
+                if r["amount"] > 0:
+                    amount.setStyleSheet(f"color: {t['positive']};")
+                amount.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                row.addWidget(date_label)
+                row.addWidget(name, 1)
+                row.addWidget(amount)
+                rl.addLayout(row)
+        else:
+            empty = QLabel(tr('Noch keine Buchungen.'))
+            empty.setObjectName("kpiSub")
+            rl.addWidget(empty)
+            rl.addWidget(make_link_button(tr('Buchung hinzufügen'), lambda: self._go_to("bookings")))
+        rl.addStretch()
+        grid.addWidget(rcard, 4, 3, 1, 3)
+
+        grid.setRowStretch(5, 1)
+        self.dashboard_scroll.setWidget(content)
 
     # =====================================================================
     # Tab 1: Buchungen (Kalenderansicht: Monat/Woche/Jahr)
@@ -139,9 +473,10 @@ class MainWindow(QMainWindow):
         root_layout = QHBoxLayout(root)
 
         # -- Linke Seite: Ansicht wählen + Kalender/Woche/Jahr --
-        left_widget = QWidget()
-        left_layout = QVBoxLayout(left_widget)
-        left_widget.setMaximumWidth(480)
+        left_widget, left_layout = make_card()
+        left_layout.setContentsMargins(14, 14, 14, 14)
+        left_layout.setSpacing(10)
+        left_widget.setMaximumWidth(500)
         root_layout.addWidget(left_widget)
 
         self.view_switch_combo = QComboBox()
@@ -164,14 +499,13 @@ class MainWindow(QMainWindow):
         left_layout.addStretch()
 
         # -- Rechte Seite: Tagesliste --
-        right_widget = QWidget()
-        right_layout = QVBoxLayout(right_widget)
+        right_widget, right_layout = make_card()
+        right_layout.setContentsMargins(16, 14, 16, 14)
+        right_layout.setSpacing(8)
         root_layout.addWidget(right_widget, 1)
 
         self.day_title_label = QLabel()
-        font = self.day_title_label.font()
-        font.setBold(True)
-        self.day_title_label.setFont(font)
+        self.day_title_label.setStyleSheet("font-size: 17px; font-weight: 600;")
         right_layout.addWidget(self.day_title_label)
 
         self.day_table = QTableWidget(0, 5)
@@ -184,6 +518,7 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self.day_table)
 
         hint = QLabel(tr('Tipp: Doppelklick auf eine Buchung öffnet sie zum Bearbeiten.'))
+        hint.setObjectName("muted")
         right_layout.addWidget(hint)
 
         btn_box = QHBoxLayout()
@@ -235,10 +570,38 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(page)
 
         self.calendar = QCalendarWidget()
-        self.calendar.setGridVisible(True)
+        self.calendar.setLocale(QLocale("en" if get_language() == "en" else "de"))
+        self.calendar.setGridVisible(False)
+        self.calendar.setMinimumHeight(300)
+        self.calendar.setNavigationBarVisible(False)
+        self.calendar.setVerticalHeaderFormat(QCalendarWidget.NoVerticalHeader)
+        self.calendar.setHorizontalHeaderFormat(QCalendarWidget.ShortDayNames)
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor(theme.current()["muted"]))
+        self.calendar.setWeekdayTextFormat(Qt.Saturday, fmt)
+        self.calendar.setWeekdayTextFormat(Qt.Sunday, fmt)
         self.calendar.selectionChanged.connect(self._on_day_selected)
         self.calendar.activated.connect(self._on_day_double_clicked)
         self.calendar.currentPageChanged.connect(self._on_calendar_page_changed)
+        nav_row = QHBoxLayout()
+        prev_month_btn = QPushButton("◀")
+        prev_month_btn.clicked.connect(self.calendar.showPreviousMonth)
+        self.calendar_title = QLabel()
+        self.calendar_title.setAlignment(Qt.AlignCenter)
+        self.calendar_title.setStyleSheet("font-size: 15px; font-weight: 600;")
+        next_month_btn = QPushButton("▶")
+        next_month_btn.clicked.connect(self.calendar.showNextMonth)
+        today_month_btn = QPushButton(tr('Heute'))
+        today_month_btn.clicked.connect(lambda: (self.calendar.setSelectedDate(QDate.currentDate()),
+                                                 self.calendar.setCurrentPage(QDate.currentDate().year(),
+                                                                              QDate.currentDate().month())))
+        nav_row.addWidget(prev_month_btn)
+        nav_row.addWidget(self.calendar_title, 1)
+        nav_row.addWidget(next_month_btn)
+        nav_row.addWidget(today_month_btn)
+        layout.addLayout(nav_row)
+        self.calendar.currentPageChanged.connect(self._update_calendar_title)
+        self._update_calendar_title(self.calendar.yearShown(), self.calendar.monthShown())
         layout.addWidget(self.calendar)
 
         self.month_balance_label = QLabel()
@@ -253,6 +616,9 @@ class MainWindow(QMainWindow):
         layout.addWidget(legend)
         layout.addStretch()
         return page
+
+    def _update_calendar_title(self, year, month):
+        self.calendar_title.setText(f"{months()[month - 1]} {year}")
 
     def _build_week_page(self):
         page = QWidget()
@@ -617,6 +983,12 @@ class MainWindow(QMainWindow):
         self.budget_table.setHorizontalHeaderLabels(
             [tr('Kategorie'), tr('Budget'), tr('Ausgegeben'), tr('Verbleibend'), tr('Fortschritt')])
         self.budget_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        for _col in (1, 2, 3):
+            self.budget_table.horizontalHeader().setSectionResizeMode(_col, QHeaderView.ResizeToContents)
+        self.budget_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Fixed)
+        self.budget_table.setColumnWidth(4, 190)
+        self.budget_table.verticalHeader().setVisible(False)
+        self.budget_table.verticalHeader().setDefaultSectionSize(40)
         self.budget_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.budget_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         layout.addWidget(self.budget_table)
@@ -645,30 +1017,27 @@ class MainWindow(QMainWindow):
 
             limit_amount = r["limit_amount"]
             spent = r["spent"]
-            progress = QProgressBar()
-            progress.setTextVisible(True)
-            progress.setAlignment(Qt.AlignCenter)
+            tk = theme.current()
+            percent, bar_color = 0, tk["accent"]
             if limit_amount is None:
                 self.budget_table.setItem(i, 1, QTableWidgetItem(tr('— kein Budget —')))
                 self.budget_table.setItem(i, 2, QTableWidgetItem(fmt_amount(spent)))
                 self.budget_table.setItem(i, 3, QTableWidgetItem("–"))
-                progress.setValue(0)
             else:
                 remaining = limit_amount - spent
-                fraction = int(min(100, max(0, (spent / limit_amount) * 100))) if limit_amount else 0
+                percent = int(min(100, max(0, (spent / limit_amount) * 100))) if limit_amount else 0
                 self.budget_table.setItem(i, 1, QTableWidgetItem(fmt_amount(limit_amount)))
                 self.budget_table.setItem(i, 2, QTableWidgetItem(fmt_amount(spent)))
                 self.budget_table.setItem(i, 3, QTableWidgetItem(fmt_amount(remaining)))
-                progress.setValue(fraction)
                 level = self.store.budget_level(spent, limit_amount)
-                chunk = {"warn": "#e0a030", "over": "#d9483b"}.get(level)
-                if chunk:
-                    progress.setStyleSheet(f"QProgressBar::chunk {{ background: {chunk}; }}")
-                if level == "over":
-                    self.budget_table.item(i, 3).setForeground(QColor(224, 82, 69))
-                    self.budget_table.item(i, 2).setForeground(QColor(224, 82, 69))
-                elif level == "warn":
-                    self.budget_table.item(i, 2).setForeground(QColor(224, 160, 48))
+                if level == "warn":
+                    bar_color = tk["warn"]
+                    self.budget_table.item(i, 2).setForeground(QColor(tk["warn"]))
+                elif level == "over":
+                    bar_color = tk["negative"]
+                    self.budget_table.item(i, 3).setForeground(QColor(tk["negative"]))
+                    self.budget_table.item(i, 2).setForeground(QColor(tk["negative"]))
+            progress = BarCell(percent, bar_color)
             self.budget_table.setCellWidget(i, 4, progress)
 
     def _on_set_budget(self):
@@ -735,8 +1104,7 @@ class MainWindow(QMainWindow):
             self.goal_table.setItem(i, 3, QTableWidgetItem(g["target_date"] or "–"))
             fraction = int(min(100, (g["current_amount"] / g["target_amount"]) * 100)) \
                 if g["target_amount"] else 0
-            progress = QProgressBar()
-            progress.setValue(fraction)
+            progress = BarCell(fraction, theme.current()["accent"])
             self.goal_table.setCellWidget(i, 4, progress)
 
     def _selected_goal(self):
@@ -1293,7 +1661,7 @@ class MainWindow(QMainWindow):
         self._update_tax_hint()
         tax_grid.addWidget(self.etf_tax_hint, 6, 0, 1, 3)
 
-        calc_btn = QPushButton(tr('Berechnen & Speichern'))
+        calc_btn = QPushButton(tr('Berechnen & Speichern').replace("&", "&&"))
         calc_btn.clicked.connect(self._on_calculate_etf)
         layout.addWidget(calc_btn)
 
@@ -2042,50 +2410,57 @@ class MainWindow(QMainWindow):
     # =====================================================================
 
     def _build_export_tab(self):
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
         widget = QWidget()
-        layout = QVBoxLayout(widget)
+        scroll.setWidget(widget)
+        outer = QVBoxLayout(widget)
+        outer.setSpacing(14)
 
-        csv_label = QLabel(
-            tr('CSV-Export aller Buchungen – zum Öffnen/Weiterverarbeiten in Excel oder Numbers/LibreOffice Calc.')
-        )
-        csv_label.setWordWrap(True)
-        layout.addWidget(csv_label)
-        csv_btn = QPushButton(tr('Buchungen als CSV exportieren…'))
-        csv_btn.clicked.connect(self._on_export_csv)
-        layout.addWidget(csv_btn)
+        def section(title):
+            card, lay = make_card()
+            lay.setSpacing(8)
+            head = QLabel(title)
+            head.setObjectName("cardTitle")
+            lay.addWidget(head)
+            outer.addWidget(card)
+            return lay
 
-        csv_import_label = QLabel(
-            tr('CSV-Import: Buchungen aus einer anderen Haushaltsbuch- oder Banking-Software übernehmen. Trennzeichen sowie deutsche/englische Zahlen- und Datumsformate werden automatisch erkannt.')
-        )
-        csv_import_label.setWordWrap(True)
-        layout.addWidget(csv_import_label)
-        csv_import_btn = QPushButton(tr('Buchungen aus CSV importieren…'))
-        csv_import_btn.clicked.connect(self._on_import_csv)
-        layout.addWidget(csv_import_btn)
+        def text(lay, content):
+            label = QLabel(content)
+            label.setWordWrap(True)
+            lay.addWidget(label)
 
-        json_label = QLabel(
-            tr('Vollständiges Backup (JSON) – enthält alle Buchungen, Vorlagen, Budgets, Sparziele, ETF-Pläne und Kategorien.')
-        )
-        json_label.setWordWrap(True)
-        layout.addWidget(json_label)
-        export_json_btn = QPushButton(tr('Backup als JSON exportieren…'))
-        export_json_btn.clicked.connect(self._on_export_json)
-        layout.addWidget(export_json_btn)
-        import_json_btn = QPushButton(tr('Backup aus JSON importieren…'))
-        import_json_btn.clicked.connect(self._on_import_json)
-        layout.addWidget(import_json_btn)
+        def button(lay, label, slot):
+            btn = QPushButton(label)
+            btn.clicked.connect(slot)
+            lay.addWidget(btn, 0, Qt.AlignLeft)
+            return btn
 
-        backup_label = QLabel(
-            tr('Automatische Sicherung: Beim ersten Start eines Tages legt Plutos eine Kopie der Datenbank in {0} an (die letzten {1} bleiben erhalten).').format(self.store.backup_dir, self.store.BACKUP_KEEP)
-        )
-        backup_label.setWordWrap(True)
-        layout.addWidget(backup_label)
-        backup_btn = QPushButton(tr('Datenbank jetzt sichern'))
-        backup_btn.clicked.connect(self._on_backup_now)
-        layout.addWidget(backup_btn)
+        lay = section(tr('Tabelle (CSV)'))
+        text(lay, tr('CSV-Export aller Buchungen – zum Öffnen/Weiterverarbeiten in Excel oder Numbers/LibreOffice Calc.'))
+        button(lay, tr('Buchungen als CSV exportieren…'), self._on_export_csv)
+        text(lay, tr('CSV-Import: Buchungen aus einer anderen Haushaltsbuch- oder Banking-Software übernehmen. Trennzeichen sowie deutsche/englische Zahlen- und Datumsformate werden automatisch erkannt.'))
+        button(lay, tr('Buchungen aus CSV importieren…'), self._on_import_csv)
 
+        lay = section(tr('Sicherung'))
+        text(lay, tr('Vollständiges Backup (JSON) – enthält alle Buchungen, Vorlagen, Budgets, Sparziele, ETF-Pläne und Kategorien.'))
+        row = QHBoxLayout()
+        for label, slot in ((tr('Backup als JSON exportieren…'), self._on_export_json),
+                            (tr('Backup aus JSON importieren…'), self._on_import_json)):
+            btn = QPushButton(label)
+            btn.clicked.connect(slot)
+            row.addWidget(btn)
+        row.addStretch()
+        lay.addLayout(row)
+        text(lay, tr('Automatische Sicherung: Beim ersten Start eines Tages legt Plutos eine Kopie der Datenbank in {0} an (die letzten {1} bleiben erhalten).').format(self.store.backup_dir, self.store.BACKUP_KEEP))
+        button(lay, tr('Datenbank jetzt sichern'), self._on_backup_now)
+
+        lay = section(tr('Darstellung'))
         lang_row = QHBoxLayout()
-        lang_row.addWidget(QLabel("Sprache / Language:"))
+        lang_label = QLabel("Sprache / Language:")
+        lang_label.setMinimumWidth(150)
+        lang_row.addWidget(lang_label)
         self.language_combo = QComboBox()
         for code, name in LANGUAGES.items():
             self.language_combo.addItem(name, code)
@@ -2094,12 +2469,32 @@ class MainWindow(QMainWindow):
         self.language_combo.currentIndexChanged.connect(self._on_language_changed)
         lang_row.addWidget(self.language_combo)
         lang_row.addStretch()
-        layout.addLayout(lang_row)
+        lay.addLayout(lang_row)
+
+        theme_row = QHBoxLayout()
+        theme_label = QLabel(tr('Darstellung:'))
+        theme_label.setMinimumWidth(150)
+        theme_row.addWidget(theme_label)
+        self.theme_combo = QComboBox()
+        for key, label in (("system", tr('Wie das System')), ("light", tr('Hell')), ("dark", tr('Dunkel'))):
+            self.theme_combo.addItem(label, key)
+        self.theme_combo.setCurrentIndex(
+            max(0, self.theme_combo.findData(self.store.get_setting("theme", "system"))))
+        self.theme_combo.currentIndexChanged.connect(self._on_theme_changed)
+        theme_row.addWidget(self.theme_combo)
+        theme_row.addStretch()
+        lay.addLayout(theme_row)
 
         self.export_status_label = QLabel()
-        layout.addWidget(self.export_status_label)
-        layout.addStretch()
-        return widget
+        self.export_status_label.setWordWrap(True)
+        outer.addWidget(self.export_status_label)
+        outer.addStretch()
+        return scroll
+
+    def _on_theme_changed(self, index):
+        self.store.set_setting("theme", self.theme_combo.itemData(index))
+        self.export_status_label.setText(
+            tr('Die Darstellung wird nach einem Neustart vollständig übernommen.'))
 
     def _on_language_changed(self, index):
         self.store.set_setting("language", self.language_combo.itemData(index))

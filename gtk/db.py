@@ -1358,6 +1358,80 @@ class FinanceStore:
                 pocket = round(float(goal["current_amount"]), 2)
         return {"giro": giro, "pocket": pocket, "total": round(giro + pocket, 2)}
 
+    # -- Übersichtsseite ----------------------------------------------------------
+
+    def dashboard_data(self, today=None):
+        """Kennzahlen für die Übersichtsseite (Stand: today, Standard heute).
+
+        Monatssummen gibt es "bisher" (bis einschließlich heute) und
+        "geplant" (inkl. künftiger Buchungen, z. B. wiederkehrender
+        Vorlagen). Als Vergleichsmaßstab für das Ausgabentempo dient die
+        Summe der Monatsbudgets; gibt es keine, der Durchschnitt der bis zu
+        drei Vormonate mit Ausgaben (sonst None)."""
+        if today is None:
+            today = datetime.date.today()
+        month = today.strftime("%Y-%m")
+        pattern = _month_pattern(month)
+        first = today.replace(day=1)
+        days_in_month = (add_months(first, 1) - first).days
+
+        def sums(upto=None):
+            sql = ("SELECT COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END), 0) AS income, "
+                   "COALESCE(SUM(CASE WHEN amount < 0 THEN -amount ELSE 0 END), 0) AS expense "
+                   "FROM transactions WHERE date LIKE ?")
+            params = [pattern]
+            if upto:
+                sql += " AND date <= ?"
+                params.append(upto.isoformat())
+            row = self.conn.execute(sql, params).fetchone()
+            return float(row["income"]), float(row["expense"])
+
+        income_sofar, expense_sofar = sums(today)
+        income_planned, expense_planned = sums()
+
+        budgets = [r for r in self.budget_overview(month) if r["limit_amount"]]
+        budget_total = sum(r["limit_amount"] for r in budgets)
+        baseline, baseline_kind = None, None
+        if budget_total > 0:
+            baseline, baseline_kind = budget_total, "budget"
+        else:
+            previous = []
+            for back in (1, 2, 3):
+                m = add_months(first, -back).strftime("%Y-%m")
+                row = self.conn.execute(
+                    "SELECT COALESCE(SUM(-amount), 0) AS e FROM transactions "
+                    "WHERE date LIKE ? AND amount < 0", (_month_pattern(m),)).fetchone()
+                if row["e"] > 0:
+                    previous.append(float(row["e"]))
+            if previous:
+                baseline, baseline_kind = sum(previous) / len(previous), "average"
+
+        top_budgets = sorted(
+            ({"name": r["category_name"], "icon": r["icon"], "spent": float(r["spent"]),
+              "limit": float(r["limit_amount"]),
+              "level": self.budget_level(r["spent"], r["limit_amount"])} for r in budgets),
+            key=lambda b: b["spent"] / b["limit"], reverse=True)[:5]
+
+        goals = [{"id": g["id"], "name": g["name"], "target": float(g["target_amount"] or 0),
+                  "current": float(g["current_amount"] or 0)} for g in self.list_goals()]
+
+        recent = [dict(r) for r in self.conn.execute("""
+            SELECT t.date, t.amount, t.description, c.name AS category_name, c.icon
+            FROM transactions t JOIN categories c ON t.category_id = c.id
+            WHERE t.date <= ? ORDER BY t.date DESC, t.id DESC LIMIT 6
+        """, (today.isoformat(),)).fetchall()]
+
+        return {
+            "month": month, "day": today.day, "days_in_month": days_in_month,
+            "income_sofar": income_sofar, "expense_sofar": expense_sofar,
+            "income_planned": income_planned, "expense_planned": expense_planned,
+            "baseline": baseline, "baseline_kind": baseline_kind,
+            "balance": self.get_balance_breakdown(),
+            "pocket_enabled": self.notgroschen_pocket_enabled(),
+            "top_budgets": top_budgets, "goals": goals, "recent": recent,
+            "trend": self.monthly_trend(6, month),
+        }
+
     # -- Export / Import ----------------------------------------------------------
 
     def export_transactions_csv(self, path):

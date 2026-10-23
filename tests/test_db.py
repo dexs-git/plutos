@@ -351,6 +351,42 @@ def test_tags_column_migrates_old_database(tmp_path):
         s2.conn.close()
 
 
+def test_recurring_and_quick_template_tags(store):
+    start = datetime.date.today().isoformat()
+    food = _cat(store, "Testessen")
+    tid = store.add_recurring_template(food, -20.0, "Abo", "monatlich", start,
+                                       tags="Streaming, abo")
+    assert store.get_recurring_template(tid)["tags"] == "Streaming,abo"
+    gen = [r for r in store.list_transactions() if r["recurring_template_id"] == tid]
+    assert gen and all(r["tags"] == "Streaming,abo" for r in gen)
+    # Ändern ohne tags-Argument behält die Tags, mit Argument ersetzt sie
+    store.update_recurring_template(tid, food, -25.0, "Abo", "monatlich", start)
+    assert store.get_recurring_template(tid)["tags"] == "Streaming,abo"
+    store.update_recurring_template(tid, food, -25.0, "Abo", "monatlich", start,
+                                    apply_to_past=True, tags="Fix")
+    gen = [r for r in store.list_transactions() if r["recurring_template_id"] == tid]
+    assert gen and all(r["tags"] == "Fix" for r in gen)
+    q = store.add_quick_template("Kaffee", food, -3.5, "Kaffee", tags="Auszeit")
+    assert store.list_quick_templates()[0]["tags"] == "Auszeit"
+    tx = store.book_quick_template(q, "2026-08-02")
+    assert store.get_transaction(tx)["tags"] == "Auszeit"
+
+
+def test_template_tags_columns_migrate(tmp_path):
+    for variant in ("gtk", "qt"):
+        path = tmp_path / f"{variant}2.db"
+        s = _load(variant).FinanceStore(path)
+        for tbl in ("recurring_templates", "quick_templates"):
+            s.conn.execute(f"ALTER TABLE {tbl} DROP COLUMN tags")
+        s.conn.commit()
+        s.conn.close()
+        s2 = _load(variant).FinanceStore(path)
+        for tbl in ("recurring_templates", "quick_templates"):
+            cols = {r["name"] for r in s2.conn.execute(f"PRAGMA table_info({tbl})")}
+            assert "tags" in cols
+        s2.conn.close()
+
+
 def test_month_summary_and_pending(store):
     food, job = _cat(store, "Testessen"), _cat(store, "Testgehalt", "einnahme")
     store.set_budget(food, "2026-08", 100.0)
@@ -369,3 +405,28 @@ def test_month_summary_and_pending(store):
     store.dismiss_month_summary("2026-08")
     assert store.pending_month_summary(today) is None
     assert store.pending_month_summary(datetime.date(2027, 1, 3)) is None  # Dezember leer
+
+
+def test_reminders(store):
+    food, rent = _cat(store, "Testessen"), _cat(store, "Testmiete")
+    today = datetime.date(2026, 10, 20)
+    store.set_budget(food, "2026-10", 100.0)
+    store.set_budget(rent, "2026-10", 800.0)
+    store.add_transaction("2026-10-05", -85.0, food, "")     # 85 % -> warn
+    store.add_transaction("2026-10-06", -900.0, rent, "")    # drüber
+    g_soon = store.add_goal("Rad", 500.0, "2026-11-15")
+    g_far = store.add_goal("Auto", 5000.0, "2027-12-01")
+    g_late = store.add_goal("Alt", 300.0, "2026-10-01")
+    store.add_recurring_template(rent, -50.0, "Streaming", "monatlich", "2026-10-23")
+    items = store.reminders(today)
+    kinds = [i["kind"] for i in items]
+    assert kinds == ["budget", "budget", "goal", "goal", "recurring"]
+    assert items[0]["level"] == "over" and items[1]["level"] == "warn"
+    goals = {i["name"]: i for i in items if i["kind"] == "goal"}
+    assert set(goals) == {"Rad", "Alt"} and goals["Alt"]["overdue"] and not goals["Rad"]["overdue"]
+    assert items[-1]["text"] == "Streaming" and items[-1]["date"] == "2026-10-23"
+    # erreichtes Ziel und fernes Zieldatum erzeugen keinen Hinweis
+    store.update_goal_target(g_soon, 500.0)
+    store.conn.execute("UPDATE savings_goals SET current_amount = 500 WHERE id = ?", (g_soon,))
+    store.conn.commit()
+    assert "Rad" not in {i["name"] for i in store.reminders(today) if i["kind"] == "goal"}

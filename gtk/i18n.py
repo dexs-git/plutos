@@ -935,4 +935,18 @@ EN = {
         'Tags:',
     'Monatsbudget ab {0} (€):':
         'Monthly budget from {0} (€):',
+    '{0} {1}: Budget überschritten ({2} von {3})':
+        '{0} {1}: budget exceeded ({2} of {3})',
+    '{0} {1}: {2:.0f} % des Budgets verbraucht ({3} von {4})':
+        '{0} {1}: {2:.0f} % of the budget used ({3} of {4})',
+    'Sparziel „{0}“: Zieldatum {1} ist überschritten, es fehlen noch {2}':
+        'Savings goal “{0}”: target date {1} has passed, {2} still missing',
+    'Sparziel „{0}“: Zieldatum {1}, es fehlen noch {2}':
+        'Savings goal “{0}”: target date {1}, {2} still missing',
+    'Fällig am {0}: {1} {2} ({3})':
+        'Due on {0}: {1} {2} ({3})',
+    '… und {0} weitere':
+        '… and {0} more',
+    'Erinnerungen':
+        'Reminders',
 }

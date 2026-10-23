@@ -190,6 +190,11 @@ class FinanceStore:
         if "tags" not in existing_tx_cols:
             c.execute("ALTER TABLE transactions ADD COLUMN tags TEXT NOT NULL DEFAULT ''")
 
+        for tbl in ("recurring_templates", "quick_templates"):
+            cols = {row["name"] for row in c.execute(f"PRAGMA table_info({tbl})")}
+            if "tags" not in cols:
+                c.execute(f"ALTER TABLE {tbl} ADD COLUMN tags TEXT NOT NULL DEFAULT ''")
+
         existing_goal_cols = {row["name"] for row in c.execute("PRAGMA table_info(savings_goals)")}
         if "priority" not in existing_goal_cols:
             c.execute("ALTER TABLE savings_goals ADD COLUMN priority INTEGER")
@@ -360,16 +365,17 @@ class FinanceStore:
 
     # -- Schnellbuchungs-Vorlagen -------------------------------------------------
 
-    def add_quick_template(self, name, category_id, amount, description=""):
+    def add_quick_template(self, name, category_id, amount, description="", tags=""):
         cur = self.conn.execute(
-            "INSERT INTO quick_templates (name, category_id, amount, description) "
-            "VALUES (?, ?, ?, ?)", (name.strip(), category_id, amount, description or ""))
+            "INSERT INTO quick_templates (name, category_id, amount, description, tags) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (name.strip(), category_id, amount, description or "", self.normalize_tags(tags)))
         self.conn.commit()
         return cur.lastrowid
 
     def list_quick_templates(self):
         return self.conn.execute("""
-            SELECT q.id, q.name, q.amount, q.description,
+            SELECT q.id, q.name, q.amount, q.description, q.tags,
                    c.id AS category_id, c.name AS category_name, c.kind, c.icon
             FROM quick_templates q JOIN categories c ON q.category_id = c.id
             ORDER BY q.name COLLATE NOCASE
@@ -385,7 +391,8 @@ class FinanceStore:
                               (template_id,)).fetchone()
         if q is None:
             return None
-        return self.add_transaction(date, q["amount"], q["category_id"], q["description"])
+        return self.add_transaction(date, q["amount"], q["category_id"], q["description"],
+                                    tags=q["tags"])
 
     def list_transactions(self, month=None):
         """month im Format YYYY-MM, oder None für alle Buchungen."""
@@ -478,12 +485,13 @@ class FinanceStore:
     # -- Wiederkehrende Vorlagen ---------------------------------------------
 
     def add_recurring_template(self, category_id, amount, description, frequency,
-                                start_date, end_date=None):
+                                start_date, end_date=None, tags=""):
         cur = self.conn.execute(
             "INSERT INTO recurring_templates (category_id, amount, description, "
-            "frequency, start_date, end_date, last_generated_date) "
-            "VALUES (?, ?, ?, ?, ?, ?, NULL)",
-            (category_id, amount, description, frequency, start_date, end_date),
+            "frequency, start_date, end_date, last_generated_date, tags) "
+            "VALUES (?, ?, ?, ?, ?, ?, NULL, ?)",
+            (category_id, amount, description, frequency, start_date, end_date,
+             self.normalize_tags(tags)),
         )
         self.conn.commit()
         template_id = cur.lastrowid
@@ -507,7 +515,8 @@ class FinanceStore:
         return cur.fetchone()
 
     def update_recurring_template(self, template_id, category_id, amount, description,
-                                   frequency, start_date, end_date=None, apply_to_past=False):
+                                   frequency, start_date, end_date=None, apply_to_past=False,
+                                   tags=None):
         """Ändert eine wiederkehrende Vorlage.
 
         apply_to_past=False (Standard): Nur künftige (heute oder später)
@@ -540,13 +549,17 @@ class FinanceStore:
             ).fetchone()
             last_generated = row["last_date"]
 
+        if tags is None:
+            row = self.conn.execute("SELECT tags FROM recurring_templates WHERE id = ?",
+                                    (template_id,)).fetchone()
+            tags = row["tags"] if row else ""
         self.conn.execute("""
             UPDATE recurring_templates
             SET category_id = ?, amount = ?, description = ?, frequency = ?,
-                start_date = ?, end_date = ?, last_generated_date = ?
+                start_date = ?, end_date = ?, last_generated_date = ?, tags = ?
             WHERE id = ?
         """, (category_id, amount, description, frequency, start_date, end_date,
-              last_generated, template_id))
+              last_generated, self.normalize_tags(tags), template_id))
         self.conn.commit()
         self.generate_due_transactions(horizon=self._generated_horizon)
 
@@ -616,9 +629,9 @@ class FinanceStore:
             while current <= limit:
                 self.conn.execute(
                     "INSERT INTO transactions (date, amount, category_id, description, "
-                    "recurring_template_id) VALUES (?, ?, ?, ?, ?)",
+                    "recurring_template_id, tags) VALUES (?, ?, ?, ?, ?, ?)",
                     (current.isoformat(), tmpl["amount"], tmpl["category_id"],
-                     tmpl["description"], tmpl["id"]),
+                     tmpl["description"], tmpl["id"], tmpl["tags"]),
                 )
                 newest = current
                 current = current + self._step(tmpl["frequency"], current)
@@ -1582,6 +1595,56 @@ class FinanceStore:
             for tag in self.split_tags(r["tags"]):
                 names.setdefault(tag.lower(), tag)
         return sorted(names.values(), key=str.lower)
+
+    # -- Erinnerungen -------------------------------------------------------------
+
+    def reminders(self, today=None, days=7):
+        """Hinweise für die Übersichtsseite, geordnet nach Dringlichkeit:
+        - Budgets des laufenden Monats ab 80 % (kind "budget", level "warn"
+          oder "over"),
+        - Sparziele mit Zieldatum in den nächsten 60 Tagen (oder bereits
+          überschritten), die noch nicht erreicht sind (kind "goal"),
+        - wiederkehrende Buchungen, die in den nächsten `days` Tagen fällig
+          werden (kind "recurring").
+        Es wird nichts gespeichert: sobald die Ursache weg ist, verschwindet
+        auch der Hinweis."""
+        today = today or datetime.date.today()
+        items = []
+
+        budgets = []
+        for r in self.budget_overview(today.strftime("%Y-%m")):
+            if not r["limit_amount"]:
+                continue
+            level = self.budget_level(r["spent"], r["limit_amount"])
+            if level in ("warn", "over"):
+                budgets.append({"kind": "budget", "level": level, "name": r["category_name"],
+                                "icon": r["icon"], "spent": r["spent"], "limit": r["limit_amount"],
+                                "percent": r["spent"] / r["limit_amount"] * 100})
+        budgets.sort(key=lambda b: (b["level"] != "over", -b["percent"]))
+        items += budgets
+
+        for g in self.list_goals():
+            if not g["target_date"] or g["target_amount"] <= 0:
+                continue
+            missing = g["target_amount"] - (g["current_amount"] or 0)
+            if missing <= 0.005:
+                continue
+            due = datetime.date.fromisoformat(g["target_date"])
+            if (due - today).days <= 60:
+                items.append({"kind": "goal", "name": g["name"], "date": g["target_date"],
+                              "missing": missing, "overdue": due < today})
+
+        self.ensure_horizon(today + datetime.timedelta(days=days))
+        for r in self.conn.execute("""
+                SELECT t.date, t.amount, t.description, c.name AS category_name, c.icon
+                FROM transactions t JOIN categories c ON t.category_id = c.id
+                WHERE t.recurring_template_id IS NOT NULL AND t.date > ? AND t.date <= ?
+                ORDER BY t.date, t.id""",
+                (today.isoformat(), (today + datetime.timedelta(days=days)).isoformat())):
+            items.append({"kind": "recurring", "date": r["date"], "amount": r["amount"],
+                          "text": (r["description"] or r["category_name"]).strip(),
+                          "icon": r["icon"]})
+        return items
 
     # -- Monatsabschluss ----------------------------------------------------------
 

@@ -148,7 +148,6 @@ class TransactionDialog(QDialog):
 
     def _on_recurring_toggled(self, active):
         self.frequency_combo.setEnabled(active)
-        self.tags_edit.setEnabled(not active)  # Vorlagen kennen noch keine Tags
 
     def save(self):
         kind = self.kind_combo.currentData()
@@ -167,7 +166,8 @@ class TransactionDialog(QDialog):
         elif self.recurring_check is not None and self.recurring_check.isChecked():
             frequency = self.frequency_combo.currentData()
             self.store.add_recurring_template(category_id, amount, description,
-                                               frequency, date_iso)
+                                               frequency, date_iso,
+                                               tags=self.tags_edit.text())
         else:
             self.store.add_transaction(date_iso, amount, category_id, description,
                                        tags=self.tags_edit.text())
@@ -214,28 +214,33 @@ class RecurringTemplateEditDialog(QDialog):
         self.description_edit = QLineEdit(template["description"] or "")
         grid.addWidget(self.description_edit, 3, 1)
 
-        grid.addWidget(QLabel(tr('Häufigkeit:')), 4, 0)
+        grid.addWidget(QLabel(tr('Tags:')), 4, 0)
+        self.tags_edit = QLineEdit(", ".join(store.split_tags(template["tags"])))
+        self.tags_edit.setPlaceholderText(tr('z. B. Urlaub, Geschenk (mit Komma trennen)'))
+        grid.addWidget(self.tags_edit, 4, 1)
+
+        grid.addWidget(QLabel(tr('Häufigkeit:')), 5, 0)
         self.frequency_combo = QComboBox()
         self.frequency_combo.addItem(tr('Wöchentlich'), "woechentlich")
         self.frequency_combo.addItem(tr('Monatlich'), "monatlich")
         self.frequency_combo.addItem(tr('Jährlich'), "jaehrlich")
         freq_index = {"woechentlich": 0, "monatlich": 1, "jaehrlich": 2}[template["frequency"]]
         self.frequency_combo.setCurrentIndex(freq_index)
-        grid.addWidget(self.frequency_combo, 4, 1)
+        grid.addWidget(self.frequency_combo, 5, 1)
 
-        grid.addWidget(QLabel(tr('Startdatum:')), 5, 0)
+        grid.addWidget(QLabel(tr('Startdatum:')), 6, 0)
         self.start_date_edit = QDateEdit()
         self.start_date_edit.setCalendarPopup(True)
         self.start_date_edit.setDisplayFormat("dd.MM.yyyy")
         self.start_date_edit.setDate(_iso_to_qdate(template["start_date"]))
-        grid.addWidget(self.start_date_edit, 5, 1)
+        grid.addWidget(self.start_date_edit, 6, 1)
 
         self.no_end_check = QCheckBox(tr('Läuft unbegrenzt weiter'))
         self.no_end_check.setChecked(template["end_date"] is None)
         self.no_end_check.toggled.connect(lambda checked: self.end_date_edit.setEnabled(not checked))
-        grid.addWidget(self.no_end_check, 6, 0, 1, 2)
+        grid.addWidget(self.no_end_check, 7, 0, 1, 2)
 
-        grid.addWidget(QLabel(tr('Enddatum:')), 7, 0)
+        grid.addWidget(QLabel(tr('Enddatum:')), 8, 0)
         self.end_date_edit = QDateEdit()
         self.end_date_edit.setCalendarPopup(True)
         self.end_date_edit.setDisplayFormat("dd.MM.yyyy")
@@ -244,18 +249,18 @@ class RecurringTemplateEditDialog(QDialog):
         else:
             self.end_date_edit.setDate(QDate.currentDate())
         self.end_date_edit.setEnabled(template["end_date"] is not None)
-        grid.addWidget(self.end_date_edit, 7, 1)
+        grid.addWidget(self.end_date_edit, 8, 1)
 
         note = QLabel(
             tr('Änderungen wirken standardmäßig nur auf zukünftige Buchungen (ab heute) – bereits vergangene bleiben als historischer Stand unverändert (z. B. sinnvoll bei einer Gehaltserhöhung: alte Monate zeigen weiterhin den alten Betrag).')
         )
         note.setWordWrap(True)
-        grid.addWidget(note, 8, 0, 1, 2)
+        grid.addWidget(note, 9, 0, 1, 2)
 
         self.apply_to_past_check = QCheckBox(
             tr('Änderungen auch auf bereits vergangene Buchungen anwenden (überschreibt deren bisherige Werte rückwirkend)')
         )
-        grid.addWidget(self.apply_to_past_check, 9, 0, 1, 2)
+        grid.addWidget(self.apply_to_past_check, 10, 0, 1, 2)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
@@ -286,6 +291,7 @@ class RecurringTemplateEditDialog(QDialog):
             self.template["id"], category_id, amount, description, frequency,
             start_date, end_date,
             apply_to_past=self.apply_to_past_check.isChecked(),
+            tags=self.tags_edit.text(),
         )
 
 

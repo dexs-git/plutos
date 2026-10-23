@@ -329,6 +329,55 @@ class MainWindow(QMainWindow):
         self.store.dismiss_month_summary(month)
         self._refresh_dashboard()
 
+
+    def _reminder_lines(self, items, limit=6):
+        """(Symbol, Text, Farb-Rolle) je Erinnerung, höchstens `limit` Zeilen."""
+        lines = []
+        for it in items:
+            if it["kind"] == "budget":
+                spent, lim = fmt_amount(it["spent"]), fmt_amount(it["limit"])
+                if it["level"] == "over":
+                    lines.append(("⛔", tr('{0} {1}: Budget überschritten ({2} von {3})').format(
+                        it["icon"], it["name"], spent, lim), "negative"))
+                else:
+                    lines.append(("⚠️", tr('{0} {1}: {2:.0f} % des Budgets verbraucht ({3} von {4})').format(
+                        it["icon"], it["name"], it["percent"], spent, lim), "warn"))
+            elif it["kind"] == "goal":
+                due = datetime.date.fromisoformat(it["date"]).strftime("%d.%m.%Y")
+                key = (tr('Sparziel „{0}“: Zieldatum {1} ist überschritten, es fehlen noch {2}')
+                       if it["overdue"] else tr('Sparziel „{0}“: Zieldatum {1}, es fehlen noch {2}'))
+                lines.append(("🎯", key.format(it["name"], due, fmt_amount(it["missing"])),
+                              "negative" if it["overdue"] else "warn"))
+            else:
+                day = datetime.date.fromisoformat(it["date"])
+                lines.append(("🔁", tr('Fällig am {0}: {1} {2} ({3})').format(
+                    day.strftime("%d.%m."), it["icon"], it["text"], fmt_amount(it["amount"])), None))
+        extra = len(lines) - limit
+        lines = lines[:limit]
+        if extra > 0:
+            lines.append(("", tr('… und {0} weitere').format(extra), None))
+        return lines
+
+    def _reminders_card(self, items):
+        t = theme.current()
+        card, lay = make_card()
+        title = QLabel(tr('Erinnerungen'))
+        title.setObjectName("cardTitle")
+        lay.addWidget(title)
+        colors = {"negative": t["negative"], "warn": t["warn"], None: None}
+        for icon, text, role in self._reminder_lines(items):
+            row = QHBoxLayout()
+            sym = QLabel(icon)
+            sym.setFixedWidth(26)
+            label = QLabel(text)
+            label.setWordWrap(True)
+            if colors[role]:
+                label.setStyleSheet(f"color: {colors[role]};")
+            row.addWidget(sym)
+            row.addWidget(label, 1)
+            lay.addLayout(row)
+        return card
+
     def _refresh_dashboard(self):
         if not hasattr(self, "dashboard_scroll"):
             return
@@ -354,6 +403,11 @@ class MainWindow(QMainWindow):
         header.addStretch()
         grid.addLayout(header, 0, 0, 1, 6)
 
+        # --- Erinnerungen -------------------------------------------------------
+        reminders = self.store.reminders()
+        if reminders:
+            grid.addWidget(self._reminders_card(reminders), 1, 0, 1, 6)
+
         # --- Monatsabschluss (Vormonat, bis er ausgeblendet wird) -----------
         summary = self.store.pending_month_summary()
         if summary:
@@ -370,7 +424,7 @@ class MainWindow(QMainWindow):
                 tr('Girokonto {0} · Notgroschen {1}').format(fmt_amount(bd["giro"]), fmt_amount(bd["pocket"])))
         else:
             card1, _ = self._kpi_card(tr('Kontostand'), fmt_amount(bd["giro"]), tr('Berechnet bis heute'))
-        grid.addWidget(card1, 2, 0, 1, 2)
+        grid.addWidget(card1, 3, 0, 1, 2)
 
         saldo = d["income_sofar"] - d["expense_sofar"]
         sub = tr('Einnahmen {0} · Ausgaben {1}').format(fmt_amount(d["income_sofar"]), fmt_amount(d["expense_sofar"]))
@@ -380,7 +434,7 @@ class MainWindow(QMainWindow):
         card2, _ = self._kpi_card(tr('Saldo im {0}').format(months()[today.month - 1]),
                                   fmt_amount(saldo), sub,
                                   t["positive"] if saldo >= 0 else t["negative"])
-        grid.addWidget(card2, 2, 2, 1, 2)
+        grid.addWidget(card2, 3, 2, 1, 2)
 
         emergency = next((g for g in d["goals"] if g["name"] == "Notgroschen"), None)
         if emergency and emergency["target"] > 0:
@@ -395,7 +449,7 @@ class MainWindow(QMainWindow):
             lay3.insertWidget(lay3.count() - 1,
                               make_link_button(tr('In der Finanzplanung einrichten'),
                                                lambda: self._go_to("planning")))
-        grid.addWidget(card3, 2, 4, 1, 2)
+        grid.addWidget(card3, 3, 4, 1, 2)
 
         # --- Ausgabentempo -----------------------------------------------
         pace, pl = make_card()
@@ -432,7 +486,7 @@ class MainWindow(QMainWindow):
             hint.setObjectName("kpiSub")
             hint.setWordWrap(True)
             pl.addWidget(hint)
-        grid.addWidget(pace, 3, 0, 1, 6)
+        grid.addWidget(pace, 4, 0, 1, 6)
 
         # --- Budgets ------------------------------------------------------
         bcard, bl = make_card()
@@ -449,7 +503,7 @@ class MainWindow(QMainWindow):
             bl.addWidget(empty)
             bl.addWidget(make_link_button(tr('Budget setzen'), lambda: self._go_to("budgets")))
         bl.addStretch()
-        grid.addWidget(bcard, 4, 0, 1, 3)
+        grid.addWidget(bcard, 5, 0, 1, 3)
 
         # --- Sparziele ----------------------------------------------------
         gcard, gl = make_card()
@@ -466,7 +520,7 @@ class MainWindow(QMainWindow):
             gl.addWidget(empty)
             gl.addWidget(make_link_button(tr('Sparziel anlegen'), lambda: self._go_to("goals")))
         gl.addStretch()
-        grid.addWidget(gcard, 4, 3, 1, 3)
+        grid.addWidget(gcard, 5, 3, 1, 3)
 
         # --- Verlauf ------------------------------------------------------
         tcard, tl = make_card()
@@ -479,7 +533,7 @@ class MainWindow(QMainWindow):
         trend.set_rows([(months_short()[int(r["month"][5:]) - 1], r["income"], r["expense"],
                          r["month"] == d["month"]) for r in d["trend"]])
         tl.addWidget(trend, 1)
-        grid.addWidget(tcard, 5, 0, 1, 3)
+        grid.addWidget(tcard, 6, 0, 1, 3)
 
         # --- Letzte Buchungen ---------------------------------------------
         rcard, rl = make_card()
@@ -508,9 +562,9 @@ class MainWindow(QMainWindow):
             rl.addWidget(empty)
             rl.addWidget(make_link_button(tr('Buchung hinzufügen'), lambda: self._go_to("bookings")))
         rl.addStretch()
-        grid.addWidget(rcard, 5, 3, 1, 3)
+        grid.addWidget(rcard, 6, 3, 1, 3)
 
-        grid.setRowStretch(6, 1)
+        grid.setRowStretch(7, 1)
         self.dashboard_scroll.setWidget(content)
 
     # =====================================================================
@@ -893,7 +947,7 @@ class MainWindow(QMainWindow):
                                         tr('Name der Vorlage:'), text=default_name)
         if ok and name.strip():
             self.store.add_quick_template(name, tx["category_id"], tx["amount"],
-                                          tx["description"])
+                                          tx["description"], tags=tx["tags"])
 
     def _on_book_from_template(self):
         dialog = QuickTemplatesDialog(self, self.store, self.selected_day)

@@ -357,6 +357,47 @@ class MainWindow(Gtk.Window):
         self.store.dismiss_month_summary(month)
         self._refresh_dashboard()
 
+
+    def _reminder_lines(self, items, limit=6):
+        """(Symbol, Text, Farb-Rolle) je Erinnerung, höchstens `limit` Zeilen."""
+        lines = []
+        for it in items:
+            if it["kind"] == "budget":
+                spent, lim = fmt_amount(it["spent"]), fmt_amount(it["limit"])
+                if it["level"] == "over":
+                    lines.append(("⛔", tr('{0} {1}: Budget überschritten ({2} von {3})').format(
+                        it["icon"], it["name"], spent, lim), "negative"))
+                else:
+                    lines.append(("⚠️", tr('{0} {1}: {2:.0f} % des Budgets verbraucht ({3} von {4})').format(
+                        it["icon"], it["name"], it["percent"], spent, lim), "warn"))
+            elif it["kind"] == "goal":
+                due = datetime.date.fromisoformat(it["date"]).strftime("%d.%m.%Y")
+                key = (tr('Sparziel „{0}“: Zieldatum {1} ist überschritten, es fehlen noch {2}')
+                       if it["overdue"] else tr('Sparziel „{0}“: Zieldatum {1}, es fehlen noch {2}'))
+                lines.append(("🎯", key.format(it["name"], due, fmt_amount(it["missing"])),
+                              "negative" if it["overdue"] else "warn"))
+            else:
+                day = datetime.date.fromisoformat(it["date"])
+                lines.append(("🔁", tr('Fällig am {0}: {1} {2} ({3})').format(
+                    day.strftime("%d.%m."), it["icon"], it["text"], fmt_amount(it["amount"])), None))
+        extra = len(lines) - limit
+        lines = lines[:limit]
+        if extra > 0:
+            lines.append(("", tr('… und {0} weitere').format(extra), None))
+        return lines
+
+    def _reminders_card(self, items):
+        card, lay = make_card()
+        lay.pack_start(theme.make_label(tr('Erinnerungen'), "card-title"), False, False, 0)
+        for icon, text, role in self._reminder_lines(items):
+            row = Gtk.Box(spacing=8)
+            sym = Gtk.Label(label=icon)
+            sym.set_size_request(26, -1)
+            row.pack_start(sym, False, False, 0)
+            row.pack_start(theme.make_label(text, role, wrap=True), True, True, 0)
+            lay.pack_start(row, False, False, 0)
+        return card
+
     def _refresh_dashboard(self):
         if not hasattr(self, "dashboard_holder"):
             return
@@ -381,10 +422,15 @@ class MainWindow(Gtk.Window):
         header.pack_start(month, False, False, 0)
         grid.attach(header, 0, 0, 6, 1)
 
+        # --- Erinnerungen -------------------------------------------------------
+        reminders = self.store.reminders()
+        if reminders:
+            grid.attach(self._reminders_card(reminders), 0, 1, 6, 1)
+
         # --- Monatsabschluss (Vormonat, bis er ausgeblendet wird) -----------
         summary = self.store.pending_month_summary()
         if summary:
-            grid.attach(self._month_summary_card(summary), 0, 1, 6, 1)
+            grid.attach(self._month_summary_card(summary), 0, 2, 6, 1)
 
         # --- Kennzahlen ---------------------------------------------------
         bd = d["balance"]
@@ -397,7 +443,7 @@ class MainWindow(Gtk.Window):
                 tr('Girokonto {0} · Notgroschen {1}').format(fmt_amount(bd["giro"]), fmt_amount(bd["pocket"])))
         else:
             card1, _ = self._kpi_card(tr('Kontostand'), fmt_amount(bd["giro"]), tr('Berechnet bis heute'))
-        grid.attach(card1, 0, 2, 2, 1)
+        grid.attach(card1, 0, 3, 2, 1)
 
         saldo = d["income_sofar"] - d["expense_sofar"]
         sub = tr('Einnahmen {0} · Ausgaben {1}').format(fmt_amount(d["income_sofar"]), fmt_amount(d["expense_sofar"]))
@@ -406,7 +452,7 @@ class MainWindow(Gtk.Window):
                 fmt_amount(d["expense_planned"] - d["expense_sofar"]))
         card2, _ = self._kpi_card(tr('Saldo im {0}').format(months()[today.month - 1]),
                                   fmt_amount(saldo), sub, "positive" if saldo >= 0 else "negative")
-        grid.attach(card2, 2, 2, 2, 1)
+        grid.attach(card2, 2, 3, 2, 1)
 
         emergency = next((g for g in d["goals"] if g["name"] == "Notgroschen"), None)
         if emergency and emergency["target"] > 0:
@@ -420,7 +466,7 @@ class MainWindow(Gtk.Window):
             card3, inner3 = self._kpi_card(tr('Notgroschen'), "–", tr('Noch nicht eingerichtet'))
             inner3.pack_start(make_link_button(tr('In der Finanzplanung einrichten'),
                                                lambda: self._go_to("planning")), False, False, 0)
-        grid.attach(card3, 4, 2, 2, 1)
+        grid.attach(card3, 4, 3, 2, 1)
 
         # --- Ausgabentempo ------------------------------------------------
         pace, pl = make_card()
@@ -454,7 +500,7 @@ class MainWindow(Gtk.Window):
             pl.pack_start(theme.make_label(
                 tr('Sobald Budgets gesetzt sind oder Buchungen aus Vormonaten vorliegen, zeigt Plutos hier, ob du im Rahmen bleibst.'),
                 "kpi-sub", wrap=True), False, False, 0)
-        grid.attach(pace, 0, 3, 6, 1)
+        grid.attach(pace, 0, 4, 6, 1)
 
         # --- Budgets ------------------------------------------------------
         bcard, bl = make_card(spacing=8)
@@ -468,7 +514,7 @@ class MainWindow(Gtk.Window):
         else:
             bl.pack_start(theme.make_label(tr('Noch keine Budgets für diesen Monat.'), "kpi-sub"), False, False, 0)
             bl.pack_start(make_link_button(tr('Budget setzen'), lambda: self._go_to("budgets")), False, False, 0)
-        grid.attach(bcard, 0, 4, 3, 1)
+        grid.attach(bcard, 0, 5, 3, 1)
 
         # --- Sparziele ----------------------------------------------------
         gcard, gl = make_card(spacing=8)
@@ -482,7 +528,7 @@ class MainWindow(Gtk.Window):
         else:
             gl.pack_start(theme.make_label(tr('Noch keine Sparziele angelegt.'), "kpi-sub"), False, False, 0)
             gl.pack_start(make_link_button(tr('Sparziel anlegen'), lambda: self._go_to("goals")), False, False, 0)
-        grid.attach(gcard, 3, 4, 3, 1)
+        grid.attach(gcard, 3, 5, 3, 1)
 
         # --- Verlauf ------------------------------------------------------
         tcard, tl = make_card()
@@ -495,7 +541,7 @@ class MainWindow(Gtk.Window):
         trend.set_rows([(months_short()[int(r["month"][5:]) - 1], r["income"], r["expense"],
                          r["month"] == d["month"]) for r in d["trend"]])
         tl.pack_start(trend, True, True, 0)
-        grid.attach(tcard, 0, 5, 3, 1)
+        grid.attach(tcard, 0, 6, 3, 1)
 
         # --- Letzte Buchungen ---------------------------------------------
         rcard, rl = make_card(spacing=6)
@@ -519,7 +565,7 @@ class MainWindow(Gtk.Window):
         else:
             rl.pack_start(theme.make_label(tr('Noch keine Buchungen.'), "kpi-sub"), False, False, 0)
             rl.pack_start(make_link_button(tr('Buchung hinzufügen'), lambda: self._go_to("bookings")), False, False, 0)
-        grid.attach(rcard, 3, 5, 3, 1)
+        grid.attach(rcard, 3, 6, 3, 1)
         self.dashboard_holder.show_all()
 
 # =====================================================================
@@ -2780,7 +2826,7 @@ class MainWindow(Gtk.Window):
         dialog.show_all()
         if dialog.run() == Gtk.ResponseType.OK and entry.get_text().strip():
             self.store.add_quick_template(entry.get_text(), tx["category_id"], tx["amount"],
-                                          tx["description"])
+                                          tx["description"], tags=tx["tags"])
         dialog.destroy()
 
     def _on_book_from_template(self, widget):
@@ -5725,7 +5771,6 @@ class TransactionDialog(FormDialog):
 
     def _on_recurring_toggled(self, widget):
         self.frequency_combo.set_sensitive(widget.get_active())
-        self.tags_entry.set_sensitive(not widget.get_active())  # Vorlagen kennen noch keine Tags
 
     def save(self):
         kind = self.kind_combo.get_active_id()
@@ -5753,7 +5798,8 @@ class TransactionDialog(FormDialog):
         elif self.recurring_check is not None and self.recurring_check.get_active():
             frequency = self.frequency_combo.get_active_id()
             self.store.add_recurring_template(
-                category_id, amount, description, frequency, date_obj.isoformat()
+                category_id, amount, description, frequency, date_obj.isoformat(),
+                tags=self.tags_entry.get_text()
             )
         else:
             self.store.add_transaction(
@@ -5900,38 +5946,43 @@ class RecurringTemplateEditDialog(FormDialog):
         self.description_entry = Gtk.Entry(text=template["description"] or "")
         grid.attach(self.description_entry, 1, 3, 1, 1)
 
-        grid.attach(Gtk.Label(label=tr('Häufigkeit:'), xalign=0), 0, 4, 1, 1)
+        grid.attach(Gtk.Label(label=tr('Tags:'), xalign=0), 0, 4, 1, 1)
+        self.tags_entry = Gtk.Entry(text=", ".join(store.split_tags(template["tags"])))
+        self.tags_entry.set_placeholder_text(tr('z. B. Urlaub, Geschenk (mit Komma trennen)'))
+        grid.attach(self.tags_entry, 1, 4, 1, 1)
+
+        grid.attach(Gtk.Label(label=tr('Häufigkeit:'), xalign=0), 0, 5, 1, 1)
         self.frequency_combo = Gtk.ComboBoxText()
         self.frequency_combo.append("woechentlich", tr('Wöchentlich'))
         self.frequency_combo.append("monatlich", tr('Monatlich'))
         self.frequency_combo.append("jaehrlich", tr('Jährlich'))
         self.frequency_combo.set_active_id(template["frequency"])
-        grid.attach(self.frequency_combo, 1, 4, 1, 1)
+        grid.attach(self.frequency_combo, 1, 5, 1, 1)
 
-        grid.attach(Gtk.Label(label=tr('Startdatum (TT.MM.JJJJ):'), xalign=0), 0, 5, 1, 1)
+        grid.attach(Gtk.Label(label=tr('Startdatum (TT.MM.JJJJ):'), xalign=0), 0, 6, 1, 1)
         start_date = datetime.date.fromisoformat(template["start_date"])
         self.start_date_entry = Gtk.Entry(text=start_date.strftime("%d.%m.%Y"))
-        grid.attach(self.start_date_entry, 1, 5, 1, 1)
+        grid.attach(self.start_date_entry, 1, 6, 1, 1)
 
-        grid.attach(Gtk.Label(label=tr('Enddatum (TT.MM.JJJJ, optional):'), xalign=0), 0, 6, 1, 1)
+        grid.attach(Gtk.Label(label=tr('Enddatum (TT.MM.JJJJ, optional):'), xalign=0), 0, 7, 1, 1)
         self.end_date_entry = Gtk.Entry()
         if template["end_date"]:
             end_date = datetime.date.fromisoformat(template["end_date"])
             self.end_date_entry.set_text(end_date.strftime("%d.%m.%Y"))
         self.end_date_entry.set_placeholder_text(tr('leer = läuft unbegrenzt weiter'))
-        grid.attach(self.end_date_entry, 1, 6, 1, 1)
+        grid.attach(self.end_date_entry, 1, 7, 1, 1)
 
         note = Gtk.Label(
             xalign=0,
             label=tr('Änderungen wirken standardmäßig nur auf zukünftige Buchungen (ab heute) – bereits vergangene bleiben als historischer Stand unverändert (z. B. sinnvoll bei einer Gehaltserhöhung: alte Monate zeigen weiterhin den alten Betrag).'),
         )
         note.set_line_wrap(True)
-        grid.attach(note, 0, 7, 2, 1)
+        grid.attach(note, 0, 8, 2, 1)
 
         self.apply_to_past_check = Gtk.CheckButton(
             label=tr('Änderungen auch auf bereits vergangene Buchungen anwenden (überschreibt deren bisherige Werte rückwirkend)')
         )
-        grid.attach(self.apply_to_past_check, 0, 8, 2, 1)
+        grid.attach(self.apply_to_past_check, 0, 9, 2, 1)
 
         self.show_all()
 
@@ -5972,6 +6023,7 @@ class RecurringTemplateEditDialog(FormDialog):
             self.template["id"], category_id, amount, description, frequency,
             start_date.isoformat(), end_date,
             apply_to_past=self.apply_to_past_check.get_active(),
+            tags=self.tags_entry.get_text(),
         )
 
 

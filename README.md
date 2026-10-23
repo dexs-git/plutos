@@ -64,6 +64,9 @@ Datenbank-Logik teilen:
   Budget lag, dazu wie oft und in welcher Summe – nur abgeschlossene Monate zählen
 - **Tags** an Buchungen („Urlaub“, „Geschenk“ …): in der Suche auffindbar, in den
   Auswertungen nach Tag aufsummiert, im CSV-Export/-Import enthalten
+- **Erinnerungen** auf der Übersichtsseite: Budgets ab 80 % bzw. überschritten, Sparziele
+  mit baldigem oder überschrittenem Zieldatum und wiederkehrende Buchungen der nächsten
+  7 Tage – sie verschwinden von selbst, sobald die Ursache erledigt ist
 - **Monatsabschluss**: Rückblick auf den Vormonat auf der Übersichtsseite (Gespart,
   Sparquote, Vergleich zum Vormonat, größte Ausgabe, eingehaltene Budgets), bis man ihn ausblendet
 - **Modernes Design**: Seitenleiste mit Icons, eine **Übersichtsseite**

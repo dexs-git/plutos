@@ -170,7 +170,11 @@ in den neuen (`~/.local/share/plutos/`) um – du musst nichts selbst tun.
 - Beim Anlegen/Bearbeiten einer Buchung können **Tags** (z. B. „Urlaub, Geschenk“)
   eingetragen werden. Die Suche findet sie (auch mit „#Urlaub“), Auswertungen →
   „Tags“ summiert sie je Jahr oder über alle Jahre; im CSV sind sie in der Spalte
-  „Tags“. Wiederkehrende Vorlagen kennen noch keine Tags.
+  „Tags“. Auch wiederkehrende Buchungen und Schnellvorlagen können Tags tragen;
+  die daraus erzeugten Buchungen übernehmen sie.
+- Die Übersichtsseite zeigt **Erinnerungen** (Budgets ab 80 %, Sparziele mit nahem
+  Zieldatum, wiederkehrende Buchungen der nächsten 7 Tage); sie verschwinden von
+  selbst, sobald die Ursache erledigt ist.
 - Auf der Übersichtsseite erscheint zum Monatswechsel ein **Monatsabschluss** für
   den Vormonat; „Ausblenden“ blendet ihn aus.
 

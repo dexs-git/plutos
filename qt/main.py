@@ -411,7 +411,7 @@ class MainWindow(QMainWindow):
         # --- Monatsabschluss (Vormonat, bis er ausgeblendet wird) -----------
         summary = self.store.pending_month_summary()
         if summary:
-            grid.addWidget(self._month_summary_card(summary), 1, 0, 1, 6)
+            grid.addWidget(self._month_summary_card(summary), 2, 0, 1, 6)
 
         # --- Kennzahlen ---------------------------------------------------
         bd = d["balance"]

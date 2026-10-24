@@ -181,6 +181,10 @@ def _run_message_dialog(parent, message_type, buttons, text, secondary_text=None
 # ---------------------------------------------------------------------------
 
 class MainWindow(Gtk.Window):
+    def show_all(self):
+        _center_inputs(self)
+        super().show_all()
+
     def __init__(self):
         super().__init__(title="Plutos – Das Haushaltsbuch")
         self.set_default_size(1050, 680)
@@ -367,6 +371,9 @@ class MainWindow(Gtk.Window):
                 if it["level"] == "over":
                     lines.append(("⛔", tr('{0} {1}: Budget überschritten ({2} von {3})').format(
                         it["icon"], it["name"], spent, lim), "negative"))
+                elif it["level"] == "full":
+                    lines.append(("⚠️", tr('{0} {1}: Budget ausgeschöpft ({2} von {3})').format(
+                        it["icon"], it["name"], spent, lim), "warn"))
                 else:
                     lines.append(("⚠️", tr('{0} {1}: {2:.0f} % des Budgets verbraucht ({3} von {4})').format(
                         it["icon"], it["name"], it["percent"], spent, lim), "warn"))
@@ -507,7 +514,7 @@ class MainWindow(Gtk.Window):
         self._card_header(bl, tr('Budgets im Monat'), tr('Alle ansehen'), "budgets")
         if d["top_budgets"]:
             for b in d["top_budgets"]:
-                color = {"over": t["negative"], "warn": t["warn"]}.get(b["level"], t["accent"])
+                color = {"over": t["negative"], "warn": t["warn"], "full": t["warn"]}.get(b["level"], t["accent"])
                 bl.pack_start(ProgressRow(f"{b['icon']}  {b['name']}",
                                           f"{fmt_amount(b['spent'])} / {fmt_amount(b['limit'])}",
                                           b["spent"] / b["limit"], color), False, False, 0)
@@ -2052,11 +2059,19 @@ class MainWindow(Gtk.Window):
             btn = Gtk.Button()
 
             btn.set_size_request(
-                -1,
+                80,
                 64
             )
 
             lbl = Gtk.Label()
+            # Kacheln sind über das homogene Grid gleich breit (7 x 80 px + Abstände
+            # passen in die feste 600-px-Spalte links). Der Label-Inhalt darf die
+            # Breite nie beeinflussen: Mindestbreite 1 Zeichen + Ellipsis; die
+            # Schrift der Beträge wird in _refresh_week_view bei Bedarf
+            # einheitlich verkleinert, sodass nichts abgeschnitten wird.
+            lbl.set_width_chars(1)
+            lbl.set_max_width_chars(1)
+            lbl.set_ellipsize(Pango.EllipsizeMode.END)
 
             lbl.set_justify(
                 Gtk.Justification.CENTER
@@ -2225,6 +2240,7 @@ class MainWindow(Gtk.Window):
             start.replace(day=1)
         )
 
+        tiles = []
         for i, (btn, lbl) in enumerate(
             self.week_day_buttons
         ):
@@ -2277,10 +2293,22 @@ class MainWindow(Gtk.Window):
                 else ""
             )
 
-            lbl.set_markup(
-                tr('<b>{0}{1}</b>\n{2}.{3}.\n<span foreground="{4}">{5}</span>').format(weekday_names[i], today_marker, d.day, d.month, color, saldo_text)
-            )
+            tiles.append((lbl, weekday_names[i], today_marker, d, color, saldo_text))
 
+        # Fest vorgegebene Kachelbreite: Der Betrag wird je Kachel nur so weit
+        # verkleinert, dass er hineinpasst – die Größe der
+        # Ansicht ändert sich dadurch beim Blättern nie.
+        available = 80 - 26
+        base = tiles[0][0].get_style_context().get_font(Gtk.StateFlags.NORMAL).get_size()
+        for lbl, wd, marker, d, color, saldo_text in tiles:
+            width = lbl.create_pango_layout(saldo_text).get_pixel_size()[0]
+            scale = min(1.0, available / width) if width else 1.0
+            amount = (f'<span size="{int(base * max(scale, 0.45))}">{saldo_text}</span>'
+                      if scale < 1.0 else saldo_text)
+            lbl.set_markup(
+                tr('<b>{0}{1}</b>\n{2}.{3}.\n<span foreground="{4}">{5}</span>').format(
+                    wd, marker, d.day, d.month, color, amount)
+            )
 
     # -- Jahresansicht -------------------------------------------------------
 
@@ -2853,7 +2881,7 @@ class MainWindow(Gtk.Window):
         before = self.store.budget_level(status["spent"] - (-saved["amount"] if is_new else 0),
                                          status["limit"])
         after = status["level"]
-        if after == before or after not in ("warn", "over"):
+        if after == before or after not in ("warn", "full", "over"):
             return
         category = next((c for c in self.store.list_categories()
                          if c["id"] == saved["category_id"]), None)
@@ -2865,6 +2893,10 @@ class MainWindow(Gtk.Window):
                 self, Gtk.MessageType.WARNING, Gtk.ButtonsType.OK,
                 tr('Budget überschritten'),
                 text + tr('\nDas Budget ist um {0} überschritten.').format(fmt_amount(status['spent'] - status['limit'])))
+        elif after == "full":
+            _run_message_dialog(self, Gtk.MessageType.INFO, Gtk.ButtonsType.OK,
+                                tr('Budget ausgeschöpft'),
+                                text + tr('\nDas Budget ist damit vollständig ausgeschöpft.'))
         else:
             _run_message_dialog(self, Gtk.MessageType.INFO, Gtk.ButtonsType.OK,
                                 tr('Budget fast aufgebraucht'),
@@ -2992,9 +3024,9 @@ class MainWindow(Gtk.Window):
                 remaining = limit_amount - spent
                 fraction = int(min(100, max(0, (spent / limit_amount) * 100))) if limit_amount else 0
                 level = self.store.budget_level(spent, limit_amount)
-                color = {"warn": "#e0a030", "over": "#e05245"}.get(level, "")
+                color = {"warn": "#e0a030", "full": "#e0a030", "over": "#e05245"}.get(level, "")
                 percent = spent / limit_amount * 100 if limit_amount else 0
-                marker = {"warn": "⚠ ", "over": "⛔ "}.get(level, "")
+                marker = {"warn": "⚠ ", "full": "⚠ ", "over": "⛔ "}.get(level, "")
                 self.budget_store.append([
                     r["category_id"], label,
                     fmt_amount(limit_amount) + ("  ↺" if r["inherited_from"] else ""),
@@ -5663,6 +5695,16 @@ class MainWindow(Gtk.Window):
 # Dialoge
 # ---------------------------------------------------------------------------
 
+def _center_inputs(obj):
+    """Zahlen- und Datumsfelder (Gtk.SpinButton sowie Datums-/Suchbereichs-
+    Einträge) mittig ausrichten – gefunden über die Attribute von `obj`."""
+    for name, w in list(vars(obj).items()):
+        if isinstance(w, Gtk.SpinButton):
+            w.set_alignment(0.5)
+        elif isinstance(w, Gtk.Entry) and ("date" in name or name in ("search_from", "search_to")):
+            w.set_alignment(0.5)
+
+
 class FormDialog(Gtk.Dialog):
     """Basisklasse für einfache Abbrechen/OK-Eingabedialoge mit einem
     Gtk.Grid als Content-Bereich (self.grid). Bündelt die sonst in fast
@@ -5679,6 +5721,10 @@ class FormDialog(Gtk.Dialog):
         area.set_border_width(10)
         self.grid = Gtk.Grid(column_spacing=8, row_spacing=8)
         area.add(self.grid)
+
+    def show_all(self):
+        _center_inputs(self)
+        super().show_all()
 
 class TransactionDialog(FormDialog):
     """Dialog zum Hinzufügen ODER Bearbeiten einer Buchung.

@@ -149,7 +149,7 @@ QComboBox::drop-down {{ border: none; width: 24px; }}
 QComboBox::down-arrow, QDateEdit::down-arrow {{ image: url("{_arrow_icon(t, 'down')}"); width: 12px; height: 12px; }}
 QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{ image: url("{_arrow_icon(t, 'up')}"); width: 9px; height: 9px; }}
 QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{ image: url("{_arrow_icon(t, 'down')}"); width: 9px; height: 9px; }}
-QSpinBox, QDoubleSpinBox, QDateEdit {{ min-width: 150px; max-width: 280px; }}
+QSpinBox, QDoubleSpinBox, QDateEdit {{ min-width: 150px; max-width: 280px; qproperty-alignment: AlignCenter; }}
 QComboBox QAbstractItemView {{ background: {t['card']}; border: 1px solid {t['border']};
     selection-background-color: {t['accent_soft']}; selection-color: {t['accent']};
     outline: none; padding: 4px; }}

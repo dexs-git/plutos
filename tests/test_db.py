@@ -168,7 +168,8 @@ def test_budget_levels(store):
     L = store.budget_level
     assert L(10, None) == "none" and L(10, 0) == "none"
     assert L(79.9, 100) == "ok" and L(80, 100) == "warn"
-    assert L(99.99, 100) == "warn" and L(100, 100) == "over"
+    assert L(99.99, 100) == "warn" and L(100, 100) == "full"
+    assert L(100.004, 100) == "full" and L(100.01, 100) == "over"
     store.set_budget(food, "2026-05", 100.0)
     assert store.budget_status(food, "2026-05")["level"] == "ok"
     store.add_transaction("2026-05-10", -85.0, food, "x")

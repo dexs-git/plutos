@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
     QListWidget, QListWidgetItem, QFrame,
 )
 from PySide6.QtCore import Qt, QDate, QSize, QLocale
-from PySide6.QtGui import QIcon, QColor, QTextCharFormat, QPalette, QShortcut, QKeySequence
+from PySide6.QtGui import QIcon, QColor, QTextCharFormat, QPalette, QShortcut, QKeySequence, QFontMetrics
 
 from db import FinanceStore, add_months
 from i18n import tr, set_language, get_language, LANGUAGES, months, months_short, weekdays, weekdays_short
@@ -339,6 +339,9 @@ class MainWindow(QMainWindow):
                 if it["level"] == "over":
                     lines.append(("⛔", tr('{0} {1}: Budget überschritten ({2} von {3})').format(
                         it["icon"], it["name"], spent, lim), "negative"))
+                elif it["level"] == "full":
+                    lines.append(("⚠️", tr('{0} {1}: Budget ausgeschöpft ({2} von {3})').format(
+                        it["icon"], it["name"], spent, lim), "warn"))
                 else:
                     lines.append(("⚠️", tr('{0} {1}: {2:.0f} % des Budgets verbraucht ({3} von {4})').format(
                         it["icon"], it["name"], it["percent"], spent, lim), "warn"))
@@ -493,7 +496,7 @@ class MainWindow(QMainWindow):
         self._card_header(bl, tr('Budgets im Monat'), tr('Alle ansehen'), "budgets")
         if d["top_budgets"]:
             for b in d["top_budgets"]:
-                color = {"over": t["negative"], "warn": t["warn"]}.get(b["level"], t["accent"])
+                color = {"over": t["negative"], "warn": t["warn"], "full": t["warn"]}.get(b["level"], t["accent"])
                 bl.addWidget(ProgressRow(f"{b['icon']}  {b['name']}",
                                          f"{fmt_amount(b['spent'])} / {fmt_amount(b['limit'])}",
                                          b["spent"] / b["limit"], color))
@@ -579,7 +582,7 @@ class MainWindow(QMainWindow):
         left_widget, left_layout = make_card()
         left_layout.setContentsMargins(14, 14, 14, 14)
         left_layout.setSpacing(10)
-        left_widget.setMaximumWidth(500)
+        left_widget.setMaximumWidth(620)
         root_layout.addWidget(left_widget)
 
         self.view_switch_combo = QComboBox()
@@ -743,14 +746,27 @@ class MainWindow(QMainWindow):
         nav.addStretch()
 
         week_box = QHBoxLayout()
+        week_box.setSpacing(4)
         layout.addLayout(week_box)
         self.week_day_buttons = []
         for i in range(7):
             btn = QPushButton()
-            btn.setMinimumHeight(64)
-            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            btn.setFixedHeight(66)
+            btn.setMinimumWidth(82)
+            btn.setStyleSheet("padding: 6px 2px; min-height: 52px;")
+            # Ignored + gleicher Stretch: alle Tage gleich breit, unabhängig vom Inhalt
+            btn.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
             btn.clicked.connect(lambda checked=False, offset=i: self._on_week_day_clicked(offset))
-            week_box.addWidget(btn)
+            # Beschriftung als Rich-Text-Label, damit der Betrag farbig sein kann
+            tile = QVBoxLayout(btn)
+            tile.setContentsMargins(0, 0, 0, 0)
+            lbl = QLabel()
+            lbl.setAlignment(Qt.AlignCenter)
+            lbl.setAttribute(Qt.WA_TransparentForMouseEvents)
+            lbl.setStyleSheet("background: transparent;")
+            tile.addWidget(lbl)
+            btn._tile_label = lbl
+            week_box.addWidget(btn, 1)
             self.week_day_buttons.append(btn)
 
         hint = QLabel(
@@ -780,11 +796,15 @@ class MainWindow(QMainWindow):
         nav.addStretch()
 
         year_grid = QGridLayout()
+        for _c in range(3):
+            year_grid.setColumnStretch(_c, 1)
         layout.addLayout(year_grid)
         self.year_month_buttons = []
         for m in range(12):
             btn = QPushButton()
             btn.setMinimumHeight(50)
+            btn.setMinimumWidth(110)
+            btn.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
             btn.clicked.connect(lambda checked=False, month=m + 1: self._on_year_month_clicked(month))
             year_grid.addWidget(btn, m // 3, m % 3)
             self.year_month_buttons.append(btn)
@@ -971,7 +991,7 @@ class MainWindow(QMainWindow):
         before = self.store.budget_level(status["spent"] - (-saved["amount"] if is_new else 0),
                                          status["limit"])
         after = status["level"]
-        if after == before or after not in ("warn", "over"):
+        if after == before or after not in ("warn", "full", "over"):
             return
         category = next((c for c in self.store.list_categories()
                          if c["id"] == saved["category_id"]), None)
@@ -981,6 +1001,9 @@ class MainWindow(QMainWindow):
         if after == "over":
             QMessageBox.warning(self, tr('Budget überschritten'),
                                 text + tr('\nDas Budget ist um {0} überschritten.').format(fmt_amount(status['spent'] - status['limit'])))
+        elif after == "full":
+            QMessageBox.information(self, tr('Budget ausgeschöpft'),
+                                    text + tr('\nDas Budget ist damit vollständig ausgeschöpft.'))
         else:
             QMessageBox.information(self, tr('Budget fast aufgebraucht'),
                                     text + tr("\nDie 80-%-Marke ist erreicht."))
@@ -1039,6 +1062,8 @@ class MainWindow(QMainWindow):
         self.week_range_label.setText(f"{start.strftime('%d.%m.')} – {end.strftime('%d.%m.%Y')}")
         self.store.ensure_horizon(start.replace(day=1))
 
+        t = theme.current()
+        tiles = []
         for i, btn in enumerate(self.week_day_buttons):
             d = start + datetime.timedelta(days=i)
             rows = self.store.list_transactions_for_day(d.isoformat())
@@ -1046,8 +1071,31 @@ class MainWindow(QMainWindow):
             expense = sum(-r["amount"] for r in rows if r["amount"] < 0)
             saldo = income - expense
             marker = " •" if d == datetime.date.today() else ""
-            saldo_text = fmt_amount(saldo) if rows else "–"
-            btn.setText(f"{weekday_names[i]}{marker}\n{d.day}.{d.month}.\n{saldo_text}")
+            if rows:
+                saldo_text = fmt_amount(saldo)
+                color = t["positive"] if saldo >= 0 else t["negative"]
+            else:
+                saldo_text, color = "–", t["muted"]
+            tiles.append((btn, f"{weekday_names[i]}{marker}", f"{d.day}.{d.month}.", saldo_text, color))
+
+        # Schrift für alle Kacheln einheitlich so verkleinern, dass auch der
+        # längste Betrag (z. B. „-1.000,00 €“) vollständig in die Kachel passt.
+        base = tiles[0][0]._tile_label.font()
+        base.setPointSizeF(max(base.pointSizeF(), 1.0))
+        available = tiles[0][0].minimumWidth() - 8
+        size = base.pointSizeF()
+        while size > 7.0:
+            base.setPointSizeF(size)
+            fm = QFontMetrics(base)
+            if all(fm.horizontalAdvance(tl[3]) <= available for tl in tiles):
+                break
+            size -= 0.5
+        for btn, day, date_text, saldo_text, color in tiles:
+            lbl = btn._tile_label
+            f = lbl.font()
+            f.setPointSizeF(size)
+            lbl.setFont(f)
+            lbl.setText(f"<b>{day}</b><br>{date_text}<br><span style=\"color:{color};\">{saldo_text}</span>")
 
     # -- Jahresansicht --------------------------------------------------
 
@@ -1148,7 +1196,7 @@ class MainWindow(QMainWindow):
                 self.budget_table.setItem(i, 2, QTableWidgetItem(fmt_amount(spent)))
                 self.budget_table.setItem(i, 3, QTableWidgetItem(fmt_amount(remaining)))
                 level = self.store.budget_level(spent, limit_amount)
-                if level == "warn":
+                if level in ("warn", "full"):
                     bar_color = tk["warn"]
                     self.budget_table.item(i, 2).setForeground(QColor(tk["warn"]))
                 elif level == "over":

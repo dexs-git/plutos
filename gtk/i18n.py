@@ -949,4 +949,10 @@ EN = {
         '… and {0} more',
     'Erinnerungen':
         'Reminders',
+    '{0} {1}: Budget ausgeschöpft ({2} von {3})':
+        '{0} {1}: budget used up ({2} of {3})',
+    'Budget ausgeschöpft':
+        'Budget used up',
+    '\nDas Budget ist damit vollständig ausgeschöpft.':
+        '\nThe budget is now fully used up.',
 }

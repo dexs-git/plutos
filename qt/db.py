@@ -792,12 +792,15 @@ class FinanceStore:
 
     @staticmethod
     def budget_level(spent, limit_amount):
-        """'ok', 'warn' (ab 80 % des Budgets) oder 'over' (ab 100 %); 'none',
-        wenn kein Budget gesetzt ist."""
+        """'ok', 'warn' (ab 80 % des Budgets), 'full' (genau ausgeschöpft,
+        auf den Cent), 'over' (tatsächlich überschritten) oder 'none', wenn
+        kein Budget gesetzt ist."""
         if not limit_amount or limit_amount <= 0:
             return "none"
-        if spent >= limit_amount:
+        if spent - limit_amount > 0.005:
             return "over"
+        if spent >= limit_amount - 0.005:
+            return "full"
         if spent >= limit_amount * FinanceStore.BUDGET_WARN_FRACTION:
             return "warn"
         return "ok"
@@ -1644,7 +1647,7 @@ class FinanceStore:
             if not r["limit_amount"]:
                 continue
             level = self.budget_level(r["spent"], r["limit_amount"])
-            if level in ("warn", "over"):
+            if level in ("warn", "full", "over"):
                 budgets.append({"kind": "budget", "level": level, "name": r["category_name"],
                                 "icon": r["icon"], "spent": r["spent"], "limit": r["limit_amount"],
                                 "percent": r["spent"] / r["limit_amount"] * 100})

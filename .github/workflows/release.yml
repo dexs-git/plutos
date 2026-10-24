@@ -104,10 +104,19 @@ jobs:
     needs: [linux, linux-gtk, macos, windows]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
+      # Feste Dateinamen (ohne Versionsnummer), damit die Download-Links auf
+      # der Website per ".../releases/latest/download/<name>" immer funktionieren.
+      - name: Quellpakete mit festen Namen anlegen
+        run: |
+          cp "artifacts/Plutos-${GITHUB_REF_NAME}-linux-gtk.zip" artifacts/plutos-linux.zip
+          cp -r qt plutos-qt
+          find plutos-qt -name __pycache__ -prune -exec rm -rf {} +
+          zip -r artifacts/plutos-qt.zip plutos-qt
       - uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*

@@ -3574,7 +3574,22 @@ class MainWindow(Gtk.Window):
             )
 
         lines.append("")
-        if rec["risk_applied"]:
+        warn = theme.current()["warn"]
+        if not rec["all_goals_funded"]:
+            # Noch nicht alles angespart: Hinweis, was danach investierbar wäre.
+            eta = (tr(' (ca. {0} Monate bei diesem Tempo)').format(rec['months_until_funded'])
+                   if rec["months_until_funded"] else "")
+            lines.append(f'<span foreground="{warn}"><b>' + tr('Rest zum Investieren: aktuell {0}, weil noch nicht alle Sparziele (z. B. der Notgroschen) angespart sind.').format(fmt_amount(0)) + '</b></span>')
+            if rec["monthly_available"] > 0:
+                lines.append(f'<span foreground="{warn}"><b>' + tr('Sobald sie gedeckt sind{0}, könntest du die folgenden Beträge investieren:').format(eta) + '</b></span>')
+                if rec["risk_applied"]:
+                    future_equity = round(rec["monthly_available"] * rec["equity_share_percent"] / 100, 2)
+                    future_safety = round(rec["monthly_available"] - future_equity, 2)
+                    lines.append(tr('  → ETF-Sparplan: <b>{0}</b>/Monat (empfohlener ETF-Anteil {1}% bei {2} Jahren Horizont, Profil „{3}“)').format(fmt_amount(future_equity), rec['equity_share_percent'], int(self.planning_horizon_spin.get_value()), self.planning_risk_combo.get_active_text()))
+                    lines.append(tr('  → Sicherheitsreserve (z. B. Tagesgeld): <b>{0}</b>/Monat').format(fmt_amount(future_safety)))
+                else:
+                    lines.append(tr('  → z. B. ETF-Sparplan: <b>{0}</b>/Monat').format(fmt_amount(rec['monthly_available'])))
+        elif rec["risk_applied"]:
             lines.append(
                 tr('Rest zum Investieren – bei {0} Jahren Horizont, Profil „{1}“: empfohlener ETF-Anteil <b>{2}%</b>, Rest als Sicherheitsreserve:').format(int(self.planning_horizon_spin.get_value()), self.planning_risk_combo.get_active_text(), rec['equity_share_percent'])
             )
@@ -3584,7 +3599,7 @@ class MainWindow(Gtk.Window):
             lines.append(
                 tr('  → Sicherheitsreserve (z. B. Tagesgeld): <b>{0}</b>/Monat, <b>{1}</b> Startkapital').format(fmt_amount(rec['monthly_to_safety']), fmt_amount(rec['capital_to_safety']))
             )
-        else:
+        if rec["all_goals_funded"] and not rec["risk_applied"]:
             lines.append(
                 tr('Rest zum Investieren (z. B. ETF-Sparplan): <b>{0}</b>/Monat, <b>{1}</b> Startkapital').format(fmt_amount(rec['monthly_to_etf']), fmt_amount(rec['capital_to_etf']))
             )

@@ -980,8 +980,20 @@ class FinanceStore:
                 "fully_funded": gap_after_capital <= 0,
             })
 
+        # Solange noch Ziele offen sind, bleibt für den ETF-Sparplan nichts
+        # übrig. Damit klar ist, was danach möglich wäre: nach wie vielen
+        # Monaten alle Ziele gedeckt wären (Monatsbetrag fließt der Reihe nach
+        # in die Ziele) – ab dann stünde der gesamte Monatsbetrag zur Verfügung.
+        total_open_gap = sum(b["remaining_gap"] for b in breakdown)
+        all_funded = total_open_gap <= 0.005
+        months_until_funded = None
+        if not all_funded and monthly_available > 0:
+            months_until_funded = math.ceil(total_open_gap / monthly_available)
+
         return {
             "monthly_available": round(monthly_available, 2),
+            "all_goals_funded": all_funded,
+            "months_until_funded": months_until_funded,
             "goals": breakdown,
             "monthly_to_etf": round(remaining_monthly, 2),
             "capital_to_etf": round(remaining_capital, 2),

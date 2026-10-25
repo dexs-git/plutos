@@ -955,4 +955,22 @@ EN = {
         'Budget used up',
     '\nDas Budget ist damit vollständig ausgeschöpft.':
         '\nThe budget is now fully used up.',
+    ' (ca. {0} Monate bei diesem Tempo)':
+        ' (about {0} months at this pace)',
+    'Rest zum Investieren: aktuell {0}, weil noch nicht alle Sparziele (z. B. der Notgroschen) angespart sind.':
+        'Left to invest: currently {0}, because not all savings goals (e.g. the emergency fund) have been saved up yet.',
+    'Sobald sie gedeckt sind{0}, könntest du die folgenden Beträge investieren:':
+        'Once they are covered{0}, you could invest the following amounts:',
+    '  → ETF-Sparplan: {0}/Monat (empfohlener ETF-Anteil {1}% bei {2} Jahren Horizont, Profil „{3}“)':
+        '  → ETF savings plan: {0}/month (recommended ETF share {1}% for a {2}-year horizon, profile “{3}”)',
+    '  → Sicherheitsreserve (z. B. Tagesgeld): {0}/Monat':
+        '  → Safety reserve (e.g. savings account): {0}/month',
+    '  → z. B. ETF-Sparplan: {0}/Monat':
+        '  → e.g. ETF savings plan: {0}/month',
+    '  → ETF-Sparplan: <b>{0}</b>/Monat (empfohlener ETF-Anteil {1}% bei {2} Jahren Horizont, Profil „{3}“)':
+        '  → ETF savings plan: <b>{0}</b>/month (recommended ETF share {1}% for a {2}-year horizon, profile “{3}”)',
+    '  → Sicherheitsreserve (z. B. Tagesgeld): <b>{0}</b>/Monat':
+        '  → Safety reserve (e.g. savings account): <b>{0}</b>/month',
+    '  → z. B. ETF-Sparplan: <b>{0}</b>/Monat':
+        '  → e.g. ETF savings plan: <b>{0}</b>/month',
 }

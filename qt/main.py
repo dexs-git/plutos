@@ -24,6 +24,7 @@ Start:
 
 import sys
 import datetime
+import html as _html
 from pathlib import Path
 import re
 
@@ -1668,7 +1669,21 @@ class MainWindow(QMainWindow):
             )
 
         lines.append("")
-        if rec["risk_applied"]:
+        if not rec["all_goals_funded"]:
+            # Noch nicht alles angespart: Hinweis, was danach investierbar wäre.
+            eta = (tr(' (ca. {0} Monate bei diesem Tempo)').format(rec['months_until_funded'])
+                   if rec["months_until_funded"] else "")
+            lines.append("\x00" + tr('Rest zum Investieren: aktuell {0}, weil noch nicht alle Sparziele (z. B. der Notgroschen) angespart sind.').format(fmt_amount(0)))
+            if rec["monthly_available"] > 0:
+                lines.append("\x00" + tr('Sobald sie gedeckt sind{0}, könntest du die folgenden Beträge investieren:').format(eta))
+                if rec["risk_applied"]:
+                    future_equity = round(rec["monthly_available"] * rec["equity_share_percent"] / 100, 2)
+                    future_safety = round(rec["monthly_available"] - future_equity, 2)
+                    lines.append(tr('  → ETF-Sparplan: {0}/Monat (empfohlener ETF-Anteil {1}% bei {2} Jahren Horizont, Profil „{3}“)').format(fmt_amount(future_equity), rec['equity_share_percent'], int(self.planning_horizon_spin.value()), self.planning_risk_combo.currentText()))
+                    lines.append(tr('  → Sicherheitsreserve (z. B. Tagesgeld): {0}/Monat').format(fmt_amount(future_safety)))
+                else:
+                    lines.append(tr('  → z. B. ETF-Sparplan: {0}/Monat').format(fmt_amount(rec['monthly_available'])))
+        elif rec["risk_applied"]:
             lines.append(
                 tr('Rest zum Investieren – bei {0} Jahren Horizont, Profil „{1}“: empfohlener ETF-Anteil {2}%, Rest als Sicherheitsreserve:').format(int(self.planning_horizon_spin.value()), self.planning_risk_combo.currentText(), rec['equity_share_percent'])
             )
@@ -1678,12 +1693,20 @@ class MainWindow(QMainWindow):
             lines.append(
                 tr('  → Sicherheitsreserve (z. B. Tagesgeld): {0}/Monat, {1} Startkapital').format(fmt_amount(rec['monthly_to_safety']), fmt_amount(rec['capital_to_safety']))
             )
-        else:
+        if rec["all_goals_funded"] and not rec["risk_applied"]:
             lines.append(
                 tr('Rest zum Investieren (z. B. ETF-Sparplan): {0}/Monat, {1} Startkapital').format(fmt_amount(rec['monthly_to_etf']), fmt_amount(rec['capital_to_etf']))
             )
 
-        self.recommendation_label.setText("\n".join(lines))
+        warn = theme.current()["warn"]
+        html_lines = []
+        for ln in lines:
+            if ln.startswith("\x00"):
+                html_lines.append(f'<b style="color:{warn};">{_html.escape(ln[1:])}</b>')
+            else:
+                html_lines.append(_html.escape(ln).replace("  ", "&nbsp;&nbsp;"))
+        self.recommendation_label.setTextFormat(Qt.RichText)
+        self.recommendation_label.setText("<br>".join(html_lines))
 
     def _on_apply_recommendation_to_etf(self):
         if not self._current_recommendation:

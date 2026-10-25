@@ -431,3 +431,16 @@ def test_reminders(store):
     store.conn.execute("UPDATE savings_goals SET current_amount = 500 WHERE id = ?", (g_soon,))
     store.conn.commit()
     assert "Rad" not in {i["name"] for i in store.reminders(today) if i["kind"] == "goal"}
+
+
+def test_recommendation_flags_open_goals(store):
+    R = store.recommend_allocation_multi
+    goal = {"id": 1, "name": "Notgroschen", "target_amount": 7800.0, "current_amount": 500.0}
+    rec = R(2500.0, 1300.0, 237.8, 2189.53, [goal])
+    assert not rec["all_goals_funded"] and rec["monthly_to_etf"] == 0 and rec["capital_to_etf"] == 0
+    assert rec["monthly_available"] == 962.2
+    assert rec["months_until_funded"] == 6    # (7300 - 2189,53) / 962,2
+    done = dict(goal, current_amount=7800.0)
+    rec2 = R(2500.0, 1300.0, 237.8, 0.0, [done])
+    assert rec2["all_goals_funded"] and rec2["months_until_funded"] is None
+    assert rec2["monthly_to_etf"] == 962.2

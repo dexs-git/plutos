@@ -973,4 +973,22 @@ EN = {
         '  → Safety reserve (e.g. savings account): <b>{0}</b>/month',
     '  → z. B. ETF-Sparplan: <b>{0}</b>/Monat':
         '  → e.g. ETF savings plan: <b>{0}</b>/month',
+    'Budget-Erinnerungen':
+        'Budget reminders',
+    'Für abgehakte Budgets zeigt die Übersicht Erinnerungen an (ab 80 % verbraucht). Nicht abgehakte Budgets bleiben still.':
+        'The overview shows reminders for checked budgets (from 80 % used). Unchecked budgets stay quiet.',
+    'Noch keine Budgets gesetzt.':
+        'No budgets set yet.',
+    'Für dieses Budget nicht mehr erinnern':
+        'Stop reminding me about this budget',
+    'Weniger anzeigen':
+        'Show less',
+    'Erinnerungen anpassen…':
+        'Adjust reminders…',
+    'Erinnerungen…':
+        'Reminders…',
+    'Festlegen, für welche Budgets die Übersicht erinnert':
+        'Choose which budgets the overview reminds you about',
+    'Stumm schalten':
+        'Mute',
 }

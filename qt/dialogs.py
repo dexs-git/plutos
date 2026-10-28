@@ -389,6 +389,40 @@ class RecurringTemplatesDialog(QDialog):
             self._refresh()
 
 
+class ReminderSettingsDialog(QDialog):
+    """Legt fest, für welche Budgets die Übersicht erinnern soll
+    (z. B. Miete abwählen, weil sie jeden Monat ausgeschöpft ist)."""
+
+    def __init__(self, parent, store: FinanceStore, month):
+        super().__init__(parent)
+        self.store = store
+        self.setWindowTitle(tr('Budget-Erinnerungen'))
+        self.setMinimumWidth(420)
+        layout = QVBoxLayout(self)
+        info = QLabel(tr('Für abgehakte Budgets zeigt die Übersicht Erinnerungen an (ab 80 % verbraucht). Nicht abgehakte Budgets bleiben still.'))
+        info.setWordWrap(True)
+        layout.addWidget(info)
+        muted = store.muted_budget_reminders()
+        self.checks = []
+        for r in store.budget_overview(month):
+            if not r["limit_amount"] and r["category_id"] not in muted:
+                continue
+            cb = QCheckBox(f"{r['icon']}  {r['category_name']}")
+            cb.setChecked(r["category_id"] not in muted)
+            layout.addWidget(cb)
+            self.checks.append((r["category_id"], cb))
+        if not self.checks:
+            layout.addWidget(QLabel(tr('Noch keine Budgets gesetzt.')))
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def save(self):
+        for category_id, cb in self.checks:
+            self.store.set_budget_reminder(category_id, cb.isChecked())
+
+
 class BudgetDialog(QDialog):
     def __init__(self, parent, store: FinanceStore, month, preselect_category_id=None):
         super().__init__(parent)

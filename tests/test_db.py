@@ -444,3 +444,20 @@ def test_recommendation_flags_open_goals(store):
     rec2 = R(2500.0, 1300.0, 237.8, 0.0, [done])
     assert rec2["all_goals_funded"] and rec2["months_until_funded"] is None
     assert rec2["monthly_to_etf"] == 962.2
+
+
+def test_budget_reminders_can_be_muted(store):
+    rent, fun = _cat(store, "Testmiete"), _cat(store, "Testfreizeit")
+    month = datetime.date.today().strftime("%Y-%m")
+    day = datetime.date.today().isoformat()
+    for cid in (rent, fun):
+        store.set_budget(cid, month, 100.0)
+        store.add_transaction(day, -100.0, cid, "x")
+    names = {r["name"] for r in store.reminders() if r["kind"] == "budget"}
+    assert {"Testmiete", "Testfreizeit"} <= names
+    store.set_budget_reminder(rent, False)
+    assert store.muted_budget_reminders() == {rent}
+    names = {r["name"] for r in store.reminders() if r["kind"] == "budget"}
+    assert "Testmiete" not in names and "Testfreizeit" in names
+    store.set_budget_reminder(rent, True)
+    assert store.muted_budget_reminders() == set()

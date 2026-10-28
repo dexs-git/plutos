@@ -362,7 +362,7 @@ class MainWindow(Gtk.Window):
         self._refresh_dashboard()
 
 
-    def _reminder_lines(self, items, limit=6):
+    def _reminder_lines(self, items, limit=6, show_all=False):
         """(Symbol, Text, Farb-Rolle) je Erinnerung, höchstens `limit` Zeilen."""
         lines = []
         for it in items:
@@ -370,40 +370,78 @@ class MainWindow(Gtk.Window):
                 spent, lim = fmt_amount(it["spent"]), fmt_amount(it["limit"])
                 if it["level"] == "over":
                     lines.append(("⛔", tr('{0} {1}: Budget überschritten ({2} von {3})').format(
-                        it["icon"], it["name"], spent, lim), "negative"))
+                        it["icon"], it["name"], spent, lim), "negative", it["category_id"]))
                 elif it["level"] == "full":
                     lines.append(("⚠️", tr('{0} {1}: Budget ausgeschöpft ({2} von {3})').format(
-                        it["icon"], it["name"], spent, lim), "warn"))
+                        it["icon"], it["name"], spent, lim), "warn", it["category_id"]))
                 else:
                     lines.append(("⚠️", tr('{0} {1}: {2:.0f} % des Budgets verbraucht ({3} von {4})').format(
-                        it["icon"], it["name"], it["percent"], spent, lim), "warn"))
+                        it["icon"], it["name"], it["percent"], spent, lim), "warn", it["category_id"]))
             elif it["kind"] == "goal":
                 due = datetime.date.fromisoformat(it["date"]).strftime("%d.%m.%Y")
                 key = (tr('Sparziel „{0}“: Zieldatum {1} ist überschritten, es fehlen noch {2}')
                        if it["overdue"] else tr('Sparziel „{0}“: Zieldatum {1}, es fehlen noch {2}'))
                 lines.append(("🎯", key.format(it["name"], due, fmt_amount(it["missing"])),
-                              "negative" if it["overdue"] else "warn"))
+                              "negative" if it["overdue"] else "warn", None))
             else:
                 day = datetime.date.fromisoformat(it["date"])
                 lines.append(("🔁", tr('Fällig am {0}: {1} {2} ({3})').format(
-                    day.strftime("%d.%m."), it["icon"], it["text"], fmt_amount(it["amount"])), None))
+                    day.strftime("%d.%m."), it["icon"], it["text"], fmt_amount(it["amount"])), None, None))
         extra = len(lines) - limit
-        lines = lines[:limit]
-        if extra > 0:
-            lines.append(("", tr('… und {0} weitere').format(extra), None))
+        if not show_all:
+            lines = lines[:limit]
+            if extra > 0:
+                lines.append(("", tr('… und {0} weitere').format(extra), None, "more"))
         return lines
 
     def _reminders_card(self, items):
         card, lay = make_card()
         lay.pack_start(theme.make_label(tr('Erinnerungen'), "card-title"), False, False, 0)
-        for icon, text, role in self._reminder_lines(items):
+        expanded = getattr(self, "_reminders_expanded", False)
+        for icon, text, role, key in self._reminder_lines(items, show_all=expanded):
             row = Gtk.Box(spacing=8)
             sym = Gtk.Label(label=icon)
             sym.set_size_request(26, -1)
             row.pack_start(sym, False, False, 0)
-            row.pack_start(theme.make_label(text, role, wrap=True), True, True, 0)
+            if key == "more":
+                row.pack_start(make_link_button(text, self._expand_reminders), False, False, 0)
+            else:
+                row.pack_start(theme.make_label(text, role, wrap=True), True, True, 0)
+                if key is not None:
+                    mute = make_link_button(tr('Stumm schalten'), lambda cid=key: self._mute_budget_reminder(cid))
+                    mute.set_tooltip_text(tr('Für dieses Budget nicht mehr erinnern'))
+                    row.pack_end(mute, False, False, 0)
             lay.pack_start(row, False, False, 0)
+        footer = Gtk.Box(spacing=8)
+        footer.pack_end(make_link_button(tr('Erinnerungen anpassen…'), self._on_reminder_settings), False, False, 0)
+        if expanded and len(self._reminder_lines(items, show_all=True)) > 6:
+            footer.pack_end(make_link_button(tr('Weniger anzeigen'), self._collapse_reminders), False, False, 0)
+        lay.pack_start(footer, False, False, 0)
         return card
+
+    def _expand_reminders(self):
+        self._reminders_expanded = True
+        self._refresh_dashboard()
+        self.dashboard_holder.show_all()
+
+    def _collapse_reminders(self):
+        self._reminders_expanded = False
+        self._refresh_dashboard()
+        self.dashboard_holder.show_all()
+
+    def _mute_budget_reminder(self, category_id):
+        self.store.set_budget_reminder(category_id, False)
+        self._refresh_dashboard()
+        self.dashboard_holder.show_all()
+
+    def _on_reminder_settings(self, *_):
+        dialog = ReminderSettingsDialog(self, self.store, datetime.date.today().strftime("%Y-%m"))
+        dialog.show_all()
+        if dialog.run() == Gtk.ResponseType.OK:
+            dialog.save()
+        dialog.destroy()
+        self._refresh_dashboard()
+        self.dashboard_holder.show_all()
 
     def _refresh_dashboard(self):
         if not hasattr(self, "dashboard_holder"):
@@ -3000,6 +3038,11 @@ class MainWindow(Gtk.Window):
         end_btn.set_tooltip_text(tr('Beendet das Budget der markierten Kategorie ab dem angezeigten Monat; frühere Monate bleiben unverändert.'))
         end_btn.connect("clicked", self._on_end_budget)
         btn_box.pack_start(end_btn, False, False, 0)
+
+        remind_btn = Gtk.Button(label=tr('Erinnerungen…'))
+        remind_btn.set_tooltip_text(tr('Festlegen, für welche Budgets die Übersicht erinnert'))
+        remind_btn.connect("clicked", self._on_reminder_settings)
+        btn_box.pack_start(remind_btn, False, False, 0)
 
         refresh_btn = Gtk.Button(label=tr('Aktualisieren'))
         refresh_btn.connect("clicked", lambda w: self._refresh_budgets_tab())
@@ -6086,6 +6129,38 @@ class RecurringTemplateEditDialog(FormDialog):
             apply_to_past=self.apply_to_past_check.get_active(),
             tags=self.tags_entry.get_text(),
         )
+
+
+class ReminderSettingsDialog(FormDialog):
+    """Legt fest, für welche Budgets die Übersicht erinnern soll
+    (z. B. Miete abwählen, weil sie jeden Monat ausgeschöpft ist)."""
+
+    def __init__(self, parent, store: FinanceStore, month):
+        super().__init__(parent, tr('Budget-Erinnerungen'))
+        self.store = store
+        info = Gtk.Label(
+            label=tr('Für abgehakte Budgets zeigt die Übersicht Erinnerungen an (ab 80 % verbraucht). Nicht abgehakte Budgets bleiben still.'),
+            xalign=0)
+        info.set_line_wrap(True)
+        info.set_max_width_chars(48)
+        self.grid.attach(info, 0, 0, 1, 1)
+        muted = store.muted_budget_reminders()
+        self.checks = []
+        row = 1
+        for r in store.budget_overview(month):
+            if not r["limit_amount"] and r["category_id"] not in muted:
+                continue
+            cb = Gtk.CheckButton(label=f"{r['icon']}  {r['category_name']}")
+            cb.set_active(r["category_id"] not in muted)
+            self.grid.attach(cb, 0, row, 1, 1)
+            self.checks.append((r["category_id"], cb))
+            row += 1
+        if not self.checks:
+            self.grid.attach(Gtk.Label(label=tr('Noch keine Budgets gesetzt.'), xalign=0), 0, 1, 1, 1)
+
+    def save(self):
+        for category_id, cb in self.checks:
+            self.store.set_budget_reminder(category_id, cb.get_active())
 
 
 class BudgetDialog(FormDialog):

@@ -53,6 +53,7 @@ from charts import (
 from dialogs import (
     TransactionDialog, RecurringTemplatesDialog, BudgetDialog, GoalDialog,
     ContributionDialog, CategoryManagerDialog, QuickTemplatesDialog, make_help_button,
+    ReminderSettingsDialog,
 )
 
 
@@ -331,35 +332,38 @@ class MainWindow(QMainWindow):
         self._refresh_dashboard()
 
 
-    def _reminder_lines(self, items, limit=6):
-        """(Symbol, Text, Farb-Rolle) je Erinnerung, höchstens `limit` Zeilen."""
+    def _reminder_lines(self, items, limit=6, show_all=False):
+        """(Symbol, Text, Farb-Rolle, Kennung) je Erinnerung, höchstens `limit`
+        Zeilen (oder alle bei show_all). Kennung: Kategorie-ID bei Budgets,
+        "more" bei der Zeile „… und N weitere“, sonst None."""
         lines = []
         for it in items:
             if it["kind"] == "budget":
                 spent, lim = fmt_amount(it["spent"]), fmt_amount(it["limit"])
                 if it["level"] == "over":
                     lines.append(("⛔", tr('{0} {1}: Budget überschritten ({2} von {3})').format(
-                        it["icon"], it["name"], spent, lim), "negative"))
+                        it["icon"], it["name"], spent, lim), "negative", it["category_id"]))
                 elif it["level"] == "full":
                     lines.append(("⚠️", tr('{0} {1}: Budget ausgeschöpft ({2} von {3})').format(
-                        it["icon"], it["name"], spent, lim), "warn"))
+                        it["icon"], it["name"], spent, lim), "warn", it["category_id"]))
                 else:
                     lines.append(("⚠️", tr('{0} {1}: {2:.0f} % des Budgets verbraucht ({3} von {4})').format(
-                        it["icon"], it["name"], it["percent"], spent, lim), "warn"))
+                        it["icon"], it["name"], it["percent"], spent, lim), "warn", it["category_id"]))
             elif it["kind"] == "goal":
                 due = datetime.date.fromisoformat(it["date"]).strftime("%d.%m.%Y")
                 key = (tr('Sparziel „{0}“: Zieldatum {1} ist überschritten, es fehlen noch {2}')
                        if it["overdue"] else tr('Sparziel „{0}“: Zieldatum {1}, es fehlen noch {2}'))
                 lines.append(("🎯", key.format(it["name"], due, fmt_amount(it["missing"])),
-                              "negative" if it["overdue"] else "warn"))
+                              "negative" if it["overdue"] else "warn", None))
             else:
                 day = datetime.date.fromisoformat(it["date"])
                 lines.append(("🔁", tr('Fällig am {0}: {1} {2} ({3})').format(
-                    day.strftime("%d.%m."), it["icon"], it["text"], fmt_amount(it["amount"])), None))
+                    day.strftime("%d.%m."), it["icon"], it["text"], fmt_amount(it["amount"])), None, None))
         extra = len(lines) - limit
-        lines = lines[:limit]
-        if extra > 0:
-            lines.append(("", tr('… und {0} weitere').format(extra), None))
+        if not show_all:
+            lines = lines[:limit]
+            if extra > 0:
+                lines.append(("", tr('… und {0} weitere').format(extra), None, "more"))
         return lines
 
     def _reminders_card(self, items):
@@ -369,18 +373,53 @@ class MainWindow(QMainWindow):
         title.setObjectName("cardTitle")
         lay.addWidget(title)
         colors = {"negative": t["negative"], "warn": t["warn"], None: None}
-        for icon, text, role in self._reminder_lines(items):
+        expanded = getattr(self, "_reminders_expanded", False)
+        lines = self._reminder_lines(items, show_all=expanded)
+        for icon, text, role, key in lines:
             row = QHBoxLayout()
             sym = QLabel(icon)
             sym.setFixedWidth(26)
-            label = QLabel(text)
-            label.setWordWrap(True)
-            if colors[role]:
-                label.setStyleSheet(f"color: {colors[role]};")
             row.addWidget(sym)
-            row.addWidget(label, 1)
+            if key == "more":
+                row.addWidget(make_link_button(text, self._expand_reminders), 0)
+                row.addStretch(1)
+            else:
+                label = QLabel(text)
+                label.setWordWrap(True)
+                if colors[role]:
+                    label.setStyleSheet(f"color: {colors[role]};")
+                row.addWidget(label, 1)
+                if key is not None:
+                    mute = make_link_button(tr('Stumm schalten'), lambda cid=key: self._mute_budget_reminder(cid))
+                    mute.setToolTip(tr('Für dieses Budget nicht mehr erinnern'))
+                    row.addWidget(mute, 0)
             lay.addLayout(row)
+        footer = QHBoxLayout()
+        footer.addStretch(1)
+        if expanded and len(self._reminder_lines(items, show_all=True)) > 6:
+            footer.addWidget(make_link_button(tr('Weniger anzeigen'), self._collapse_reminders))
+        footer.addWidget(make_link_button(tr('Erinnerungen anpassen…'), self._on_reminder_settings))
+        lay.addLayout(footer)
         return card
+
+    def _expand_reminders(self):
+        self._reminders_expanded = True
+        self._refresh_dashboard()
+
+    def _collapse_reminders(self):
+        self._reminders_expanded = False
+        self._refresh_dashboard()
+
+    def _mute_budget_reminder(self, category_id):
+        self.store.set_budget_reminder(category_id, False)
+        self._refresh_dashboard()
+
+    def _on_reminder_settings(self):
+        dialog = ReminderSettingsDialog(self, self.store,
+                                        datetime.date.today().strftime("%Y-%m"))
+        if dialog.exec() == ReminderSettingsDialog.Accepted:
+            dialog.save()
+            self._refresh_dashboard()
 
     def _refresh_dashboard(self):
         if not hasattr(self, "dashboard_scroll"):
@@ -1160,6 +1199,10 @@ class MainWindow(QMainWindow):
         end_btn.setToolTip(tr('Beendet das Budget der markierten Kategorie ab dem angezeigten Monat; frühere Monate bleiben unverändert.'))
         end_btn.clicked.connect(self._on_end_budget)
         btn_box.addWidget(end_btn)
+        remind_btn = QPushButton(tr('Erinnerungen…'))
+        remind_btn.setToolTip(tr('Festlegen, für welche Budgets die Übersicht erinnert'))
+        remind_btn.clicked.connect(self._on_reminder_settings)
+        btn_box.addWidget(remind_btn)
         refresh_btn = QPushButton(tr('Aktualisieren'))
         refresh_btn.clicked.connect(self._refresh_budgets_tab)
         btn_box.addWidget(refresh_btn)

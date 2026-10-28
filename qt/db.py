@@ -1641,6 +1641,21 @@ class FinanceStore:
 
     # -- Erinnerungen -------------------------------------------------------------
 
+    def muted_budget_reminders(self):
+        """IDs der Kategorien, deren Budget nicht in den Erinnerungen auftauchen soll."""
+        raw = self.get_setting("reminder_muted_budgets", "") or ""
+        return {int(x) for x in raw.split(",") if x.strip().isdigit()}
+
+    def set_budget_reminder(self, category_id, enabled):
+        """Schaltet die Erinnerung für das Budget einer Kategorie an oder aus
+        (z. B. Miete: soll nicht jeden Monat als „ausgeschöpft“ gemeldet werden)."""
+        muted = self.muted_budget_reminders()
+        if enabled:
+            muted.discard(int(category_id))
+        else:
+            muted.add(int(category_id))
+        self.set_setting("reminder_muted_budgets", ",".join(str(i) for i in sorted(muted)))
+
     def reminders(self, today=None, days=7):
         """Hinweise für die Übersichtsseite, geordnet nach Dringlichkeit:
         - Budgets des laufenden Monats ab 80 % (kind "budget", level "warn"
@@ -1655,12 +1670,14 @@ class FinanceStore:
         items = []
 
         budgets = []
+        muted = self.muted_budget_reminders()
         for r in self.budget_overview(today.strftime("%Y-%m")):
-            if not r["limit_amount"]:
+            if not r["limit_amount"] or r["category_id"] in muted:
                 continue
             level = self.budget_level(r["spent"], r["limit_amount"])
             if level in ("warn", "full", "over"):
                 budgets.append({"kind": "budget", "level": level, "name": r["category_name"],
+                                "category_id": r["category_id"],
                                 "icon": r["icon"], "spent": r["spent"], "limit": r["limit_amount"],
                                 "percent": r["spent"] / r["limit_amount"] * 100})
         budgets.sort(key=lambda b: (b["level"] != "over", -b["percent"]))

@@ -66,7 +66,7 @@ rm -f /tmp/plutos_pip_error.log
 
 echo "3) Kopiere Programmdateien nach $APP_DIR ..."
 mkdir -p "$APP_DIR"
-for datei in main.py db.py charts.py dialogs.py i18n.py theme.py; do
+for datei in main.py db.py charts.py dialogs.py i18n.py theme.py sync_tools.py; do
     if [ ! -f "$SCRIPT_DIR/$datei" ]; then
         echo "   FEHLER: $datei fehlt im selben Ordner wie dieses Skript."
         exit 1

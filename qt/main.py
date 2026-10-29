@@ -36,10 +36,11 @@ from PySide6.QtWidgets import (
     QMessageBox, QGroupBox, QProgressBar, QSizePolicy, QDateEdit, QInputDialog,
     QListWidget, QListWidgetItem, QFrame,
 )
-from PySide6.QtCore import Qt, QDate, QSize, QLocale
+from PySide6.QtCore import Qt, QDate, QSize, QLocale, QTimer
 from PySide6.QtGui import QIcon, QColor, QTextCharFormat, QPalette, QShortcut, QKeySequence, QFontMetrics
 
-from db import FinanceStore, add_months
+from db import FinanceStore, add_months, DATA_DIR
+import sync_tools
 from i18n import tr, set_language, get_language, LANGUAGES, months, months_short, weekdays, weekdays_short
 import theme
 from theme import (
@@ -122,6 +123,13 @@ class MainWindow(QMainWindow):
             self.store.create_db_backup()
         except Exception as exc:
             print(f"Automatisches Backup fehlgeschlagen: {exc}")
+
+        self.sync_cfg = sync_tools.SyncConfig(DATA_DIR / "sync.json")
+        self._startup_messages = []
+        try:  # Sync/Inbox dürfen den Start nie verhindern
+            self._sync_startup()
+        except Exception as exc:
+            print(f"Sync beim Start fehlgeschlagen: {exc}")
 
         self.selected_day = datetime.date.today()
         self.stats_month = datetime.date.today().replace(day=1)
@@ -2805,6 +2813,122 @@ class MainWindow(QMainWindow):
     # Tab 7: Export / Import
     # =====================================================================
 
+    # -- Synchronisation & Inbox -------------------------------------------
+
+    def _sync_startup(self):
+        """Beim Start (noch vor dem Aufbau der Oberfläche): neueren Stand eines
+        anderen Geräts anbieten und die Inbox einlesen."""
+        cfg = self.sync_cfg
+        for meta in sync_tools.find_newer(cfg):
+            box = QMessageBox(self)
+            box.setWindowTitle(tr('Neuerer Stand gefunden'))
+            box.setIcon(QMessageBox.Question)
+            box.setText(tr('Auf „{0}“ gibt es einen neueren Stand ({1} Buchungen, gespeichert {2}).\n\nJetzt laden? Dein jetziger Stand wird vorher gesichert (Ordner: {3}).').format(
+                meta["device_name"], meta["tx_count"], sync_tools.format_saved_at(meta["saved_at"]),
+                DATA_DIR / "sync-backups"))
+            load_btn = box.addButton(tr('Laden'), QMessageBox.AcceptRole)
+            ignore_btn = box.addButton(tr('Diese Version ignorieren'), QMessageBox.DestructiveRole)
+            box.addButton(tr('Später'), QMessageBox.RejectRole)
+            box.exec()
+            clicked = box.clickedButton()
+            if clicked is load_btn:
+                try:
+                    backup = sync_tools.load_snapshot(cfg, self.store, meta, DATA_DIR / "sync-backups")
+                    self._startup_messages.append(tr('Stand von „{0}“ geladen. Vorherige Daten gesichert: {1}').format(meta["device_name"], backup))
+                except Exception as exc:
+                    self._startup_messages.append(tr('Laden fehlgeschlagen: {0}').format(exc))
+            elif clicked is ignore_btn:
+                sync_tools.ignore_snapshot(cfg, meta)
+        self._run_inbox_import(startup=True)
+        if self._startup_messages:
+            QTimer.singleShot(400, self._show_startup_messages)
+
+    def _show_startup_messages(self):
+        QMessageBox.information(self, tr('Synchronisation & Inbox'), "\n\n".join(self._startup_messages))
+        self._startup_messages = []
+        if hasattr(self, "_refresh_dashboard"):
+            self._refresh_dashboard()
+
+    def _run_inbox_import(self, startup=False):
+        cfg = self.sync_cfg
+        inbox = cfg.effective_inbox()
+        if startup and not cfg.auto_import_inbox:
+            return None
+        if not inbox:
+            return None
+        result = sync_tools.import_inbox(self.store, inbox)
+        lines = sync_tools.describe_inbox_result(result, tr)
+        if startup:
+            self._startup_messages.extend(lines)
+        return result, lines
+
+    def closeEvent(self, event):
+        try:
+            if self.sync_cfg.sync_enabled:
+                sync_tools.write_snapshot(self.sync_cfg, self.store)
+        except Exception as exc:
+            print(f"Snapshot beim Beenden fehlgeschlagen: {exc}")
+        super().closeEvent(event)
+
+    def _pick_folder(self, edit, title):
+        path = QFileDialog.getExistingDirectory(self, title, edit.text() or str(Path.home()))
+        if path:
+            edit.setText(path)
+            self._save_sync_settings()
+
+    def _save_sync_settings(self):
+        cfg = self.sync_cfg
+        cfg.sync_dir = self.sync_dir_edit.text().strip()
+        cfg.inbox_dir = self.inbox_dir_edit.text().strip()
+        cfg.device_name = self.device_name_edit.text().strip() or cfg.device_name
+        cfg.auto_import_inbox = self.inbox_auto_check.isChecked()
+        cfg.save()
+
+    def _on_snapshot_now(self):
+        self._save_sync_settings()
+        if not self.sync_cfg.sync_enabled:
+            self.export_status_label.setText(tr('Kein Sync-Ordner eingestellt.'))
+            return
+        try:
+            path = sync_tools.write_snapshot(self.sync_cfg, self.store)
+            self.export_status_label.setText(tr('Snapshot geschrieben: {0}').format(path))
+        except Exception as exc:
+            self.export_status_label.setText(tr('Fehler: {0}').format(exc))
+
+    def _on_check_newer(self):
+        self._save_sync_settings()
+        if not self.sync_cfg.sync_enabled:
+            self.export_status_label.setText(tr('Kein Sync-Ordner eingestellt.'))
+            return
+        newer = sync_tools.find_newer(self.sync_cfg)
+        if not newer:
+            self.export_status_label.setText(tr('Kein neuerer Stand anderer Geräte gefunden.'))
+            return
+        m = newer[0]
+        self.export_status_label.setText(
+            tr('Es gibt einen neueren Stand von „{0}“ ({1} Buchungen, gespeichert {2}). Er wird beim nächsten Start von Plutos zum Laden angeboten.').format(
+                m["device_name"], m["tx_count"], sync_tools.format_saved_at(m["saved_at"])))
+
+    def _on_import_inbox_now(self):
+        self._save_sync_settings()
+        out = self._run_inbox_import()
+        if out is None:
+            self.export_status_label.setText(tr('Kein Inbox-Ordner eingestellt.'))
+            return
+        _, lines = out
+        self.export_status_label.setText("\n".join(lines) or tr('Keine neuen Inbox-Dateien.'))
+        self._refresh_after_data_change()
+
+    def _refresh_after_data_change(self):
+        for name in ("_refresh_dashboard", "_refresh_calendar_marks", "_refresh_day_list",
+                     "_refresh_budgets_tab", "_refresh_week_view"):
+            fn = getattr(self, name, None)
+            if fn:
+                try:
+                    fn()
+                except Exception as exc:
+                    print(f"Aktualisieren fehlgeschlagen ({name}): {exc}")
+
     def _build_export_tab(self):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -2851,6 +2975,53 @@ class MainWindow(QMainWindow):
         lay.addLayout(row)
         text(lay, tr('Automatische Sicherung: Beim ersten Start eines Tages legt Plutos eine Kopie der Datenbank in {0} an (die letzten {1} bleiben erhalten).').format(self.store.backup_dir, self.store.BACKUP_KEEP))
         button(lay, tr('Datenbank jetzt sichern'), self._on_backup_now)
+
+        lay = section(tr('Synchronisation & Inbox'))
+        text(lay, tr('Mit einem Sync-Ordner (z. B. per Syncthing) kannst du Plutos auf mehreren Geräten nutzen: Beim Beenden legt Plutos einen Snapshot der Datenbank dort ab; beim Start wird ein neuerer Stand eines anderen Geräts zum Laden angeboten. Wichtig: Es gewinnt immer ein ganzer Stand – bitte nicht auf zwei Geräten gleichzeitig arbeiten.'))
+        cfg = self.sync_cfg
+
+        def folder_row(label, value, placeholder, title):
+            row = QHBoxLayout()
+            lab = QLabel(label)
+            lab.setMinimumWidth(150)
+            row.addWidget(lab)
+            edit = QLineEdit(value)
+            if placeholder:
+                edit.setPlaceholderText(placeholder)
+            edit.editingFinished.connect(self._save_sync_settings)
+            row.addWidget(edit, 1)
+            pick = QPushButton(tr('Wählen…'))
+            pick.clicked.connect(lambda: self._pick_folder(edit, title))
+            row.addWidget(pick)
+            lay.addLayout(row)
+            return edit
+
+        self.sync_dir_edit = folder_row(tr('Sync-Ordner:'), cfg.sync_dir, "", tr('Ordner für den Sync wählen'))
+        dev_row = QHBoxLayout()
+        dev_label = QLabel(tr('Gerätename:'))
+        dev_label.setMinimumWidth(150)
+        dev_row.addWidget(dev_label)
+        self.device_name_edit = QLineEdit(cfg.device_name)
+        self.device_name_edit.editingFinished.connect(self._save_sync_settings)
+        dev_row.addWidget(self.device_name_edit, 1)
+        lay.addLayout(dev_row)
+        row = QHBoxLayout()
+        for label, slot in ((tr('Snapshot jetzt schreiben'), self._on_snapshot_now),
+                            (tr('Nach neuerem Stand suchen'), self._on_check_newer)):
+            btn = QPushButton(label)
+            btn.clicked.connect(slot)
+            row.addWidget(btn)
+        row.addStretch()
+        lay.addLayout(row)
+
+        text(lay, tr('Inbox: Buchungen vom Handy (z. B. Textdateien per KDE Connect) werden hier eingelesen und zu Buchungen. Eine Zeile pro Buchung: Betrag;Kategorie;Beschreibung;Tags;Datum – alles ab der Beschreibung ist optional. Auch .json-Dateien werden gelesen.'))
+        self.inbox_dir_edit = folder_row(tr('Inbox-Ordner:'), cfg.inbox_dir,
+                                         tr('leer = Unterordner „inbox“ im Sync-Ordner'), tr('Inbox-Ordner wählen'))
+        self.inbox_auto_check = QCheckBox(tr('Inbox beim Start automatisch einlesen'))
+        self.inbox_auto_check.setChecked(cfg.auto_import_inbox)
+        self.inbox_auto_check.toggled.connect(lambda _: self._save_sync_settings())
+        lay.addWidget(self.inbox_auto_check)
+        button(lay, tr('Inbox jetzt einlesen'), self._on_import_inbox_now)
 
         lay = section(tr('Darstellung'))
         lang_row = QHBoxLayout()

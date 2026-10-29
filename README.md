@@ -83,6 +83,10 @@ Datenbank-Logik teilen:
   14 bleiben erhalten), zusätzlich „Datenbank jetzt sichern“ per Klick
 - **„?“-Hilfe-Buttons** neben allen erklärungsbedürftigen Eingabefeldern
 
+### Synchronisation & Inbox
+
+Sync über einen gemeinsamen Ordner (z. B. Syncthing) auf mehreren Geräten und Import von Buchungen aus Textdateien vom Handy (z. B. per KDE Connect) – siehe [docs/SYNC.md](docs/SYNC.md).
+
 ## Fertige Programmpakete
 
 Unter [Releases](../../releases) liegen – sobald ein Release veröffentlicht ist –

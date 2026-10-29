@@ -991,4 +991,64 @@ EN = {
         'Choose which budgets the overview reminds you about',
     'Stumm schalten':
         'Mute',
+    'Synchronisation & Inbox':
+        'Synchronization & inbox',
+    'Mit einem Sync-Ordner (z. B. per Syncthing) kannst du Plutos auf mehreren Geräten nutzen: Beim Beenden legt Plutos einen Snapshot der Datenbank dort ab; beim Start wird ein neuerer Stand eines anderen Geräts zum Laden angeboten. Wichtig: Es gewinnt immer ein ganzer Stand – bitte nicht auf zwei Geräten gleichzeitig arbeiten.':
+        'With a sync folder (e.g. via Syncthing) you can use Plutos on several devices: on exit Plutos stores a snapshot of the database there; on start a newer state from another device is offered for loading. Important: a whole state always wins – please do not work on two devices at the same time.',
+    'Sync-Ordner:':
+        'Sync folder:',
+    'Wählen…':
+        'Choose…',
+    'Gerätename:':
+        'Device name:',
+    'Snapshot jetzt schreiben':
+        'Write snapshot now',
+    'Nach neuerem Stand suchen':
+        'Check for newer state',
+    'Inbox: Buchungen vom Handy (z. B. Textdateien per KDE Connect) werden hier eingelesen und zu Buchungen. Eine Zeile pro Buchung: Betrag;Kategorie;Beschreibung;Tags;Datum – alles ab der Beschreibung ist optional. Auch .json-Dateien werden gelesen.':
+        'Inbox: bookings from your phone (e.g. text files via KDE Connect) are read here and turned into bookings. One line per booking: amount;category;description;tags;date – everything after the description is optional. .json files are read as well.',
+    'Inbox-Ordner:':
+        'Inbox folder:',
+    'leer = Unterordner „inbox“ im Sync-Ordner':
+        'empty = subfolder “inbox” in the sync folder',
+    'Inbox beim Start automatisch einlesen':
+        'Import inbox automatically on start',
+    'Inbox jetzt einlesen':
+        'Import inbox now',
+    'Ordner für den Sync wählen':
+        'Choose sync folder',
+    'Inbox-Ordner wählen':
+        'Choose inbox folder',
+    'Neuerer Stand gefunden':
+        'Newer state found',
+    'Auf „{0}“ gibt es einen neueren Stand ({1} Buchungen, gespeichert {2}).\n\nJetzt laden? Dein jetziger Stand wird vorher gesichert (Ordner: {3}).':
+        'There is a newer state on “{0}” ({1} bookings, saved {2}).\n\nLoad it now? Your current state is backed up first (folder: {3}).',
+    'Laden':
+        'Load',
+    'Diese Version ignorieren':
+        'Ignore this version',
+    'Später':
+        'Later',
+    'Stand von „{0}“ geladen. Vorherige Daten gesichert: {1}':
+        'State from “{0}” loaded. Previous data backed up: {1}',
+    'Laden fehlgeschlagen: {0}':
+        'Loading failed: {0}',
+    'Kein Sync-Ordner eingestellt.':
+        'No sync folder set.',
+    'Snapshot geschrieben: {0}':
+        'Snapshot written: {0}',
+    'Fehler: {0}':
+        'Error: {0}',
+    'Es gibt einen neueren Stand von „{0}“ ({1} Buchungen, gespeichert {2}). Er wird beim nächsten Start von Plutos zum Laden angeboten.':
+        'There is a newer state from “{0}” ({1} bookings, saved {2}). It will be offered for loading the next time Plutos starts.',
+    'Kein neuerer Stand anderer Geräte gefunden.':
+        'No newer state from other devices found.',
+    'Kein Inbox-Ordner eingestellt.':
+        'No inbox folder set.',
+    'Keine neuen Inbox-Dateien.':
+        'No new inbox files.',
+    '{0} Buchung(en) aus {1} Datei(en) importiert.':
+        '{0} booking(s) imported from {1} file(s).',
+    'Fehlerhafte Dateien ({0}): {1} – sie liegen im Unterordner „fehler“.':
+        'Faulty files ({0}): {1} – they are in the subfolder “fehler”.',
 }

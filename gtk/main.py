@@ -42,7 +42,8 @@ import datetime
 import re
 import math
 
-from db import FinanceStore, add_months
+from db import FinanceStore, add_months, DATA_DIR
+import sync_tools
 import theme
 from theme import make_card, make_link_button, ProgressRow, PaceBar, MiniTrend, NavIcon
 from i18n import tr, set_language, get_language, LANGUAGES, months, months_short, weekdays, weekdays_short
@@ -197,6 +198,13 @@ class MainWindow(Gtk.Window):
         except Exception as exc:
             print(f"Automatisches Backup fehlgeschlagen: {exc}")
 
+        self.sync_cfg = sync_tools.SyncConfig(DATA_DIR / "sync.json")
+        self._startup_messages = []
+        try:  # Sync/Inbox dürfen den Start nie verhindern
+            self._sync_startup()
+        except Exception as exc:
+            print(f"Sync beim Start fehlgeschlagen: {exc}")
+
         self.selected_day = datetime.date.today()
         self.stats_month = datetime.date.today().replace(day=1)
         self.trend_months = 6
@@ -240,7 +248,9 @@ class MainWindow(Gtk.Window):
         self.stack.connect("notify::visible-child-name", self._on_page_changed)
         self._go_to("overview")
 
-        self.connect("destroy", Gtk.main_quit)
+        self.connect("destroy", self._on_destroy)
+        if self._startup_messages:
+            GLib.timeout_add(400, self._show_startup_messages)
         
 
     # =====================================================================
@@ -5605,6 +5615,55 @@ class MainWindow(Gtk.Window):
         text(box, tr('Automatische Sicherung: Beim ersten Start eines Tages legt Plutos eine Kopie der Datenbank in {0} an (die letzten {1} bleiben erhalten).').format(self.store.backup_dir, self.store.BACKUP_KEEP))
         button(box, tr('Datenbank jetzt sichern'), self._on_backup_now)
 
+        box = section(tr('Synchronisation & Inbox'))
+        text(box, tr('Mit einem Sync-Ordner (z. B. per Syncthing) kannst du Plutos auf mehreren Geräten nutzen: Beim Beenden legt Plutos einen Snapshot der Datenbank dort ab; beim Start wird ein neuerer Stand eines anderen Geräts zum Laden angeboten. Wichtig: Es gewinnt immer ein ganzer Stand – bitte nicht auf zwei Geräten gleichzeitig arbeiten.'))
+        cfg = self.sync_cfg
+
+        def folder_row(grid, label, value, placeholder, title):
+            grid.attach(Gtk.Label(label=label, xalign=0.0), 0, 0, 1, 1)
+            entry = Gtk.Entry()
+            entry.set_text(value)
+            entry.set_hexpand(True)
+            entry.set_width_chars(10)
+            entry.set_alignment(0.0)
+            if placeholder:
+                entry.set_placeholder_text(placeholder)
+            entry.connect("focus-out-event", lambda *a: self._save_sync_settings())
+            grid.attach(entry, 1, 0, 1, 1)
+            pick = Gtk.Button(label=tr('Wählen…'))
+            pick.connect("clicked", lambda *_: self._pick_folder(entry, title))
+            grid.attach(pick, 2, 0, 1, 1)
+            return entry
+
+        sgrid = Gtk.Grid(column_spacing=8, row_spacing=8)
+        self.sync_dir_entry = folder_row(sgrid, tr('Sync-Ordner:'), cfg.sync_dir, "", tr('Ordner für den Sync wählen'))
+        box.pack_start(sgrid, False, False, 0)
+        dgrid = Gtk.Grid(column_spacing=8, row_spacing=8)
+        dgrid.attach(Gtk.Label(label=tr('Gerätename:'), xalign=0.0), 0, 0, 1, 1)
+        self.device_name_entry = Gtk.Entry()
+        self.device_name_entry.set_text(cfg.device_name)
+        self.device_name_entry.set_width_chars(10)
+        self.device_name_entry.set_hexpand(True)
+        self.device_name_entry.set_alignment(0.0)
+        self.device_name_entry.connect("focus-out-event", lambda *a: self._save_sync_settings())
+        dgrid.attach(self.device_name_entry, 1, 0, 1, 1)
+        box.pack_start(dgrid, False, False, 0)
+        row = Gtk.Box(spacing=8)
+        button(row, tr('Snapshot jetzt schreiben'), self._on_snapshot_now)
+        button(row, tr('Nach neuerem Stand suchen'), self._on_check_newer)
+        box.pack_start(row, False, False, 0)
+
+        text(box, tr('Inbox: Buchungen vom Handy (z. B. Textdateien per KDE Connect) werden hier eingelesen und zu Buchungen. Eine Zeile pro Buchung: Betrag;Kategorie;Beschreibung;Tags;Datum – alles ab der Beschreibung ist optional. Auch .json-Dateien werden gelesen.'))
+        igrid = Gtk.Grid(column_spacing=8, row_spacing=8)
+        self.inbox_dir_entry = folder_row(igrid, tr('Inbox-Ordner:'), cfg.inbox_dir,
+                                          tr('leer = Unterordner „inbox“ im Sync-Ordner'), tr('Inbox-Ordner wählen'))
+        box.pack_start(igrid, False, False, 0)
+        self.inbox_auto_check = Gtk.CheckButton(label=tr('Inbox beim Start automatisch einlesen'))
+        self.inbox_auto_check.set_active(cfg.auto_import_inbox)
+        self.inbox_auto_check.connect("toggled", lambda *_: self._save_sync_settings())
+        box.pack_start(self.inbox_auto_check, False, False, 0)
+        button(box, tr('Inbox jetzt einlesen'), self._on_import_inbox_now)
+
         box = section(tr('Darstellung'))
         grid = Gtk.Grid(column_spacing=12, row_spacing=8)
         grid.attach(Gtk.Label(label="Sprache / Language:", xalign=0.0), 0, 0, 1, 1)
@@ -5630,6 +5689,123 @@ class MainWindow(Gtk.Window):
         self.export_status_label.set_max_width_chars(10)
         outer.pack_start(self.export_status_label, False, False, 0)
         return scroll
+
+    # ----- Synchronisation & Inbox -----------------------------------------
+    def _on_destroy(self, widget):
+        try:
+            if self.sync_cfg.sync_enabled:
+                sync_tools.write_snapshot(self.sync_cfg, self.store)
+        except Exception as exc:
+            print(f"Snapshot beim Beenden fehlgeschlagen: {exc}")
+        Gtk.main_quit()
+
+    def _sync_startup(self):
+        """Beim Start (vor dem Aufbau der Oberfläche): neueren Stand eines
+        anderen Geräts anbieten und die Inbox einlesen."""
+        cfg = self.sync_cfg
+        for meta in sync_tools.find_newer(cfg):
+            dialog = Gtk.MessageDialog(
+                transient_for=None, flags=0, message_type=Gtk.MessageType.QUESTION,
+                text=tr('Neuerer Stand gefunden'),
+                secondary_text=tr('Auf „{0}“ gibt es einen neueren Stand ({1} Buchungen, gespeichert {2}).\n\nJetzt laden? Dein jetziger Stand wird vorher gesichert (Ordner: {3}).').format(
+                    meta["device_name"], meta["tx_count"], sync_tools.format_saved_at(meta["saved_at"]),
+                    DATA_DIR / "sync-backups"))
+            dialog.add_button(tr('Später'), Gtk.ResponseType.CANCEL)
+            dialog.add_button(tr('Diese Version ignorieren'), Gtk.ResponseType.REJECT)
+            dialog.add_button(tr('Laden'), Gtk.ResponseType.ACCEPT)
+            response = dialog.run()
+            dialog.destroy()
+            if response == Gtk.ResponseType.ACCEPT:
+                try:
+                    backup = sync_tools.load_snapshot(cfg, self.store, meta, DATA_DIR / "sync-backups")
+                    self._startup_messages.append(tr('Stand von „{0}“ geladen. Vorherige Daten gesichert: {1}').format(meta["device_name"], backup))
+                except Exception as exc:
+                    self._startup_messages.append(tr('Laden fehlgeschlagen: {0}').format(exc))
+            elif response == Gtk.ResponseType.REJECT:
+                sync_tools.ignore_snapshot(cfg, meta)
+        self._run_inbox_import(startup=True)
+
+    def _show_startup_messages(self):
+        _run_message_dialog(self, Gtk.MessageType.INFO, Gtk.ButtonsType.OK,
+                            tr('Synchronisation & Inbox'), "\n\n".join(self._startup_messages))
+        self._startup_messages = []
+        self._refresh_dashboard()
+        return False
+
+    def _run_inbox_import(self, startup=False):
+        cfg = self.sync_cfg
+        inbox = cfg.effective_inbox()
+        if startup and not cfg.auto_import_inbox:
+            return None
+        if not inbox:
+            return None
+        result = sync_tools.import_inbox(self.store, inbox)
+        lines = sync_tools.describe_inbox_result(result, tr)
+        if startup:
+            self._startup_messages.extend(lines)
+        return result, lines
+
+    def _pick_folder(self, entry, title):
+        dialog = Gtk.FileChooserDialog(title=title, parent=self,
+                                       action=Gtk.FileChooserAction.SELECT_FOLDER)
+        dialog.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+                           Gtk.STOCK_OPEN, Gtk.ResponseType.OK)
+        if entry.get_text().strip():
+            dialog.set_current_folder(entry.get_text().strip())
+        if dialog.run() == Gtk.ResponseType.OK:
+            entry.set_text(dialog.get_filename())
+            self._save_sync_settings()
+        dialog.destroy()
+
+    def _save_sync_settings(self, *_args):
+        cfg = self.sync_cfg
+        cfg.sync_dir = self.sync_dir_entry.get_text().strip()
+        cfg.inbox_dir = self.inbox_dir_entry.get_text().strip()
+        cfg.device_name = self.device_name_entry.get_text().strip() or cfg.device_name
+        cfg.auto_import_inbox = self.inbox_auto_check.get_active()
+        cfg.save()
+        return False
+
+    def _on_snapshot_now(self, widget):
+        self._save_sync_settings()
+        if not self.sync_cfg.sync_enabled:
+            self.export_status_label.set_text(tr('Kein Sync-Ordner eingestellt.'))
+            return
+        try:
+            path = sync_tools.write_snapshot(self.sync_cfg, self.store)
+            self.export_status_label.set_text(tr('Snapshot geschrieben: {0}').format(path))
+        except Exception as exc:
+            self.export_status_label.set_text(tr('Fehler: {0}').format(exc))
+
+    def _on_check_newer(self, widget):
+        self._save_sync_settings()
+        if not self.sync_cfg.sync_enabled:
+            self.export_status_label.set_text(tr('Kein Sync-Ordner eingestellt.'))
+            return
+        newer = sync_tools.find_newer(self.sync_cfg)
+        if not newer:
+            self.export_status_label.set_text(tr('Kein neuerer Stand anderer Geräte gefunden.'))
+            return
+        m = newer[0]
+        self.export_status_label.set_text(
+            tr('Es gibt einen neueren Stand von „{0}“ ({1} Buchungen, gespeichert {2}). Er wird beim nächsten Start von Plutos zum Laden angeboten.').format(
+                m["device_name"], m["tx_count"], sync_tools.format_saved_at(m["saved_at"])))
+
+    def _on_import_inbox_now(self, widget):
+        self._save_sync_settings()
+        out = self._run_inbox_import()
+        if out is None:
+            self.export_status_label.set_text(tr('Kein Inbox-Ordner eingestellt.'))
+            return
+        _, lines = out
+        self.export_status_label.set_text("\n".join(lines) or tr('Keine neuen Inbox-Dateien.'))
+        for name in ("_refresh_dashboard", "_refresh_day_list", "_refresh_budgets_tab", "_refresh_week_view"):
+            fn = getattr(self, name, None)
+            if fn:
+                try:
+                    fn()
+                except Exception as exc:
+                    print(f"Aktualisieren fehlgeschlagen ({name}): {exc}")
 
     def _on_theme_changed(self, combo):
         mode = combo.get_active_id()

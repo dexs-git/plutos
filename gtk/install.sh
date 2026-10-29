@@ -40,6 +40,7 @@ mkdir -p "$APP_DIR"
 cp "$SCRIPT_DIR/main.py" "$APP_DIR/main.py"
 cp "$SCRIPT_DIR/db.py" "$APP_DIR/db.py"
 cp "$SCRIPT_DIR/i18n.py" "$APP_DIR/i18n.py"
+cp "$SCRIPT_DIR/sync_tools.py" "$APP_DIR/sync_tools.py"
 cp "$SCRIPT_DIR/theme.py" "$APP_DIR/theme.py"
 if [ -f "$SCRIPT_DIR/icon.svg" ]; then
     cp "$SCRIPT_DIR/icon.svg" "$APP_DIR/icon.svg"

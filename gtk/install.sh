@@ -34,6 +34,9 @@ if ! python3 -c "import gi; gi.require_version('Gtk', '3.0'); from gi.repository
     exit 1
 fi
 echo "   OK."
+# Absoluten Pfad merken: Der Menüstarter hat oft einen anderen PATH als das
+# Terminal (z. B. conda/pyenv) und würde sonst ein Python ohne GTK finden.
+PYTHON_BIN="$(command -v python3)"
 
 echo "2) Kopiere Programmdateien nach $APP_DIR ..."
 mkdir -p "$APP_DIR"
@@ -54,7 +57,7 @@ Type=Application
 Name=Plutos
 GenericName=Das Haushaltsbuch
 Comment=Plutos – Das Haushaltsbuch: Budget- und Finanzplaner
-Exec=python3 "$APP_DIR/main.py"
+Exec="$PYTHON_BIN" "$APP_DIR/main.py"
 Icon=$APP_DIR/icon.svg
 Terminal=false
 Categories=Office;Finance;
@@ -72,5 +75,6 @@ echo "Zum Anheften an die Taskleiste/das Panel: Rechtsklick auf den Eintrag"
 echo "im Menü -> „An Favoriten anheften“ o. Ä. (Bezeichnung je nach"
 echo "Cinnamon-Version leicht unterschiedlich)."
 echo ""
+echo "Python-Interpreter:           $PYTHON_BIN"
 echo "Programmdateien liegen unter: $APP_DIR"
 echo "Menüeintrag liegt unter:      $DESKTOP_FILE"

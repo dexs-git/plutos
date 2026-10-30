@@ -66,11 +66,18 @@ jobs:
       - run: pip install -r qt/requirements.txt pyinstaller
       - run: pyinstaller packaging/plutos.spec --noconfirm
       - name: dmg erstellen
+        # hdiutil statt create-dmg: kommt ohne Homebrew/Finder-Skripting aus
+        # und scheitert auf CI-Runnern deutlich seltener.
         run: |
-          brew install create-dmg
-          create-dmg --volname "Plutos" --app-drop-link 420 150 \
-            --window-size 640 360 --icon "Plutos.app" 200 150 \
-            "dist/Plutos-${GITHUB_REF_NAME}-macOS-arm64.dmg" "dist/Plutos.app"
+          mkdir -p dmg-stage
+          cp -R dist/Plutos.app dmg-stage/
+          ln -s /Applications dmg-stage/Applications
+          for i in 1 2 3; do
+            hdiutil create -volname "Plutos" -srcfolder dmg-stage -ov -format UDZO \
+              "dist/Plutos-${GITHUB_REF_NAME}-macOS-arm64.dmg" && break
+            echo "hdiutil fehlgeschlagen (Versuch $i), neuer Versuch ..."; sleep 10
+          done
+          test -f "dist/Plutos-${GITHUB_REF_NAME}-macOS-arm64.dmg"
       - uses: actions/upload-artifact@v4
         with:
           name: macos-dmg

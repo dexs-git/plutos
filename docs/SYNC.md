@@ -45,4 +45,13 @@ Mit `id` wird dieselbe Buchung nie doppelt importiert.
 
 - **KDE Connect:** In den Einstellungen des Plugins „Dateien empfangen“ den Ordner „Empfangene Dateien speichern in“ auf den Inbox-Ordner stellen. Dann reicht es, auf dem Handy eine Textdatei an den PC zu senden.
 - **Android:** Notiz-/Datei-App mit einer Textdatei pro Buchung oder Tasker/Automate, die eine Datei im Format oben erzeugt und per KDE Connect oder Syncthing in den Inbox-Ordner legt.
-- **iOS:** Mit einem Kurzbefehl (Eingabe „Betrag“ und „Kategorie“ abfragen → Text `Betrag;Kategorie;…` → als Datei in einen Ordner sichern, der mit dem PC synchronisiert wird, z. B. per Syncthing-kompatibler App oder iCloud-/Cloud-Ordner, den du als Inbox wählst).
+- **iOS mit Synctrain (Syncthing-Client mit Kurzbefehle-Anbindung):** siehe unten.
+- **iOS allgemein:** Mit einem Kurzbefehl (Eingabe „Betrag“ und „Kategorie“ abfragen → Text `Betrag;Kategorie;…` → als Datei in einen Ordner sichern, der mit dem PC synchronisiert wird, z. B. per Syncthing-kompatibler App oder iCloud-/Cloud-Ordner, den du als Inbox wählst).
+
+## iOS: Kurzbefehl + Synctrain
+
+**Buchungs-Kurzbefehl:** Betrag (Text) abfragen → Kategorie aus Liste wählen → Beschreibung abfragen → Text `Betrag;Kategorie;Beschreibung;;` bauen → „Datei sichern“ in den Synctrain-Ordner (Dateiname z. B. `dd.MM.yyyy-HH.mm.ss.txt`, Endung `.txt` ist wichtig). Die Kategorienamen müssen exakt wie in Plutos geschrieben sein. Der Betrag darf mit oder ohne Komma stehen.
+
+**Automation für das Heimnetz:** Kurzbefehle → Automation → WLAN → dein Heimnetz, „Beigetreten“ → „Sofort ausführen“. Aktionen: Synctrain „Ordner erneut scannen“ (Sync-Ordner) und „Eine Weile synchronisieren“ (maximal 15 Sekunden). Unterwegs bleibt die Datei im Ordner liegen und wird beim Betreten des Heimnetzes übertragen.
+
+Eingelesene Dateien verschiebt Plutos nach `inbox/verarbeitet/`; dort kannst du sie bedenkenlos löschen.

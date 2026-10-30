@@ -87,6 +87,8 @@ Datenbank-Logik teilen:
 
 Sync über einen gemeinsamen Ordner (z. B. Syncthing) auf mehreren Geräten und Import von Buchungen aus Textdateien vom Handy (z. B. per KDE Connect) – siehe [docs/SYNC.md](docs/SYNC.md).
 
+Beispiel für unterwegs: Ein iOS-Kurzbefehl legt eine Textdatei wie `12,50;Lebensmittel;Bäcker;;` im Ordner der Syncthing-App Synctrain ab. Eine WLAN-Automation überträgt sie beim Betreten des Heimnetzes, und Plutos legt beim Start die Buchung an.
+
 ## Fertige Programmpakete
 
 Unter [Releases](../../releases) liegen – sobald ein Release veröffentlicht ist –

@@ -191,6 +191,7 @@
     <nav class="top-links">
       <a href="#eintraege">Funktionen</a>
       <a href="#vergleich">Vergleich</a>
+      <a href="#sync">Sync</a>
       <a href="#plattformen">Herunterladen</a>
       <a href="#transparenz">Wie's entstand</a>
     </nav>
@@ -443,6 +444,40 @@
           Details stehen rechts in der Tagesliste, darunter ein kurzer
           Hinweisblock zur Bedienung. Läuft mit denselben Dateien auf allen
           drei Plattformen.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="sync">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="kicker">Mehrere Geräte</div>
+        <h2>Sync-Ordner und Buchungen vom Handy</h2>
+        <p>Plutos braucht keinen Server und keine Cloud: Die Daten bleiben auf
+        deinen Geräten. Zwei optionale Funktionen verbinden sie miteinander –
+        beide funktionieren mit jedem Ordner-Sync wie Syncthing.</p>
+      </div>
+      <div class="compare-notes">
+        <div>
+          <h3>Sync-Ordner</h3>
+          <p>Beim Beenden legt Plutos einen Snapshot der Datenbank im
+          Sync-Ordner ab; jedes Gerät schreibt nur seine eigene Datei, es gibt
+          also keine Sync-Konflikte. Beim Start wird ein neuerer Stand eines
+          anderen Geräts zum Laden angeboten – der eigene Stand wird vorher
+          gesichert. Es gewinnt immer ein ganzer Stand, bitte nicht auf zwei
+          Geräten gleichzeitig arbeiten.</p>
+        </div>
+        <div>
+          <h3>Inbox: Buchungen per Kurzbefehl</h3>
+          <p>Ein Kurzbefehl (iOS) oder eine Automatisierungs-App (Android)
+          legt unterwegs eine kleine Textdatei an, z.&nbsp;B.
+          <code>12,50;Lebensmittel;Bäcker;;</code>. Per Syncthing (etwa mit der
+          iOS-App Synctrain) oder KDE Connect landet sie im Inbox-Ordner;
+          Plutos liest sie beim Start ein und legt die Buchungen an. Das
+          Vorzeichen ergibt sich aus der Kategorie, fehlerhafte Dateien werden
+          in einen Unterordner verschoben. Die Anleitung steht in der
+          <a href="https://github.com/dexs-git/plutos/blob/main/docs/SYNC.md">SYNC.md</a>.</p>
         </div>
       </div>
     </div>

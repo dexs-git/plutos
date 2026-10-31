@@ -16,7 +16,7 @@ Syncthing: in `.stignore` des Ordners `*.plutos-tmp` eintragen (temporäre Schre
 
 ## 2. Inbox (Buchungen vom Handy)
 
-Plutos liest kleine Dateien aus dem **Inbox-Ordner** (Standard: `<Sync-Ordner>/inbox`, frei wählbar) beim Start (abschaltbar) oder per Knopf „Inbox jetzt einlesen“. Verarbeitete Dateien landen in `verarbeitet/`, fehlerhafte in `fehler/` samt `<Datei>.fehler.txt`. Eine Datei wird ganz oder gar nicht importiert. Dateien jünger als 2 Sekunden werden übersprungen (noch im Übertragen).
+Plutos liest kleine Dateien aus dem **Inbox-Ordner** (Standard: `<Sync-Ordner>/inbox`, frei wählbar) beim Start (abschaltbar) oder per Knopf „Inbox jetzt einlesen“. Verarbeitete Dateien landen in `verarbeitet/`, fehlerhafte in `fehler/` samt `<Datei>.fehler.txt`. Eine Datei wird ganz oder gar nicht importiert. Dateien jünger als 2 Sekunden werden übersprungen (noch im Übertragen). Dateien in `verarbeitet/` löscht Plutos vor jedem Einlesen automatisch, sobald sie älter als die eingestellte Zahl Tage sind (Standard 14, `0` = nie löschen). `fehler/` und die Inbox selbst bleiben unangetastet.
 
 ### Textformat (`.txt`, `.csv`)
 
@@ -54,4 +54,4 @@ Mit `id` wird dieselbe Buchung nie doppelt importiert.
 
 **Automation für das Heimnetz:** Kurzbefehle → Automation → WLAN → dein Heimnetz, „Beigetreten“ → „Sofort ausführen“. Aktionen: Synctrain „Ordner erneut scannen“ (Sync-Ordner) und „Eine Weile synchronisieren“ (maximal 15 Sekunden). Unterwegs bleibt die Datei im Ordner liegen und wird beim Betreten des Heimnetzes übertragen.
 
-Eingelesene Dateien verschiebt Plutos nach `inbox/verarbeitet/`; dort kannst du sie bedenkenlos löschen.
+Eingelesene Dateien verschiebt Plutos nach `inbox/verarbeitet/` und räumt sie dort nach einigen Tagen selbst weg (einstellbar).

@@ -126,3 +126,23 @@ def test_snapshot_roundtrip_between_two_devices(env):
     st.ignore_snapshot(cfg_b, again[0])
     assert st.find_newer(cfg_b) == []
     a.conn.close(); b.conn.close()
+
+
+def test_cleanup_processed_only_old_files_in_verarbeitet(env):
+    _db, sync_tools, tmp_path = env
+    inbox = tmp_path / "inbox"
+    done = inbox / "verarbeitet"
+    err = inbox / "fehler"
+    done.mkdir(parents=True)
+    err.mkdir()
+    old, new = done / "alt.txt", done / "neu.txt"
+    keep_err, keep_inbox = err / "x.txt", inbox / "offen.txt"
+    for p in (old, new, keep_err, keep_inbox):
+        p.write_text("1;a")
+    now = time.time()
+    for p in (old, keep_err, keep_inbox):
+        os.utime(p, (now - 40 * 86400, now - 40 * 86400))
+    assert sync_tools.cleanup_processed(inbox, 0, now) == 0
+    assert old.exists()
+    assert sync_tools.cleanup_processed(inbox, 14, now) == 1
+    assert not old.exists() and new.exists() and keep_err.exists() and keep_inbox.exists()

@@ -5662,6 +5662,14 @@ class MainWindow(Gtk.Window):
         self.inbox_auto_check.set_active(cfg.auto_import_inbox)
         self.inbox_auto_check.connect("toggled", lambda *_: self._save_sync_settings())
         box.pack_start(self.inbox_auto_check, False, False, 0)
+        keep_row = Gtk.Box(spacing=8)
+        keep_row.pack_start(Gtk.Label(label=tr('Verarbeitete Dateien löschen nach (Tagen, 0 = nie):'), xalign=0.0), False, False, 0)
+        self.inbox_keep_spin = Gtk.SpinButton.new_with_range(0, 3650, 1)
+        self.inbox_keep_spin.set_value(cfg.processed_keep_days)
+        self.inbox_keep_spin.set_alignment(0.5)
+        self.inbox_keep_spin.connect("value-changed", lambda *_: self._save_sync_settings())
+        keep_row.pack_start(self.inbox_keep_spin, False, False, 0)
+        box.pack_start(keep_row, False, False, 0)
         button(box, tr('Inbox jetzt einlesen'), self._on_import_inbox_now)
 
         box = section(tr('Darstellung'))
@@ -5739,6 +5747,10 @@ class MainWindow(Gtk.Window):
             return None
         if not inbox:
             return None
+        try:
+            sync_tools.cleanup_processed(inbox, cfg.processed_keep_days)
+        except Exception as exc:
+            print(f"Aufräumen der Inbox fehlgeschlagen: {exc}")
         result = sync_tools.import_inbox(self.store, inbox)
         lines = sync_tools.describe_inbox_result(result, tr)
         if startup:
@@ -5763,6 +5775,7 @@ class MainWindow(Gtk.Window):
         cfg.inbox_dir = self.inbox_dir_entry.get_text().strip()
         cfg.device_name = self.device_name_entry.get_text().strip() or cfg.device_name
         cfg.auto_import_inbox = self.inbox_auto_check.get_active()
+        cfg.processed_keep_days = int(self.inbox_keep_spin.get_value())
         cfg.save()
         return False
 

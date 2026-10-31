@@ -1051,4 +1051,6 @@ EN = {
         '{0} booking(s) imported from {1} file(s).',
     'Fehlerhafte Dateien ({0}): {1} – sie liegen im Unterordner „fehler“.':
         'Faulty files ({0}): {1} – they are in the subfolder “fehler”.',
+    'Verarbeitete Dateien löschen nach (Tagen, 0 = nie):':
+        'Delete processed files after (days, 0 = never):',
 }

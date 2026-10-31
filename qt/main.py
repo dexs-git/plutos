@@ -2856,6 +2856,10 @@ class MainWindow(QMainWindow):
             return None
         if not inbox:
             return None
+        try:
+            sync_tools.cleanup_processed(inbox, cfg.processed_keep_days)
+        except Exception as exc:
+            print(f"Aufräumen der Inbox fehlgeschlagen: {exc}")
         result = sync_tools.import_inbox(self.store, inbox)
         lines = sync_tools.describe_inbox_result(result, tr)
         if startup:
@@ -2882,6 +2886,7 @@ class MainWindow(QMainWindow):
         cfg.inbox_dir = self.inbox_dir_edit.text().strip()
         cfg.device_name = self.device_name_edit.text().strip() or cfg.device_name
         cfg.auto_import_inbox = self.inbox_auto_check.isChecked()
+        cfg.processed_keep_days = self.inbox_keep_spin.value()
         cfg.save()
 
     def _on_snapshot_now(self):
@@ -3021,6 +3026,16 @@ class MainWindow(QMainWindow):
         self.inbox_auto_check.setChecked(cfg.auto_import_inbox)
         self.inbox_auto_check.toggled.connect(lambda _: self._save_sync_settings())
         lay.addWidget(self.inbox_auto_check)
+        keep_row = QHBoxLayout()
+        keep_row.addWidget(QLabel(tr('Verarbeitete Dateien löschen nach (Tagen, 0 = nie):')))
+        self.inbox_keep_spin = QSpinBox()
+        self.inbox_keep_spin.setRange(0, 3650)
+        self.inbox_keep_spin.setValue(cfg.processed_keep_days)
+        self.inbox_keep_spin.setAlignment(Qt.AlignCenter)
+        self.inbox_keep_spin.editingFinished.connect(self._save_sync_settings)
+        keep_row.addWidget(self.inbox_keep_spin)
+        keep_row.addStretch()
+        lay.addLayout(keep_row)
         button(lay, tr('Inbox jetzt einlesen'), self._on_import_inbox_now)
 
         lay = section(tr('Darstellung'))

@@ -70,6 +70,10 @@ class SyncConfig:
         self.loaded = dict(data.get("loaded", {}))     # Geräte-ID -> geladener Stand
         self.ignored = dict(data.get("ignored", {}))   # Geräte-ID -> ignorierter Stand
         self.auto_import_inbox = bool(data.get("auto_import_inbox", True))
+        try:
+            self.processed_keep_days = max(0, int(data.get("processed_keep_days", 14)))
+        except (TypeError, ValueError):
+            self.processed_keep_days = 14   # 0 = verarbeitete Dateien nie löschen
         if not data.get("device_id"):
             self.save()
 
@@ -79,6 +83,7 @@ class SyncConfig:
             "device_id": self.device_id, "device_name": self.device_name,
             "last_saved_at": self.last_saved_at, "loaded": self.loaded,
             "ignored": self.ignored, "auto_import_inbox": self.auto_import_inbox,
+            "processed_keep_days": self.processed_keep_days,
         }
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_name(self.path.name + ".tmp")
@@ -352,6 +357,29 @@ def _unique_target(folder, name):
         target = folder / f"{Path(name).stem}-{n}{Path(name).suffix}"
         n += 1
     return target
+
+
+def cleanup_processed(inbox_dir, keep_days, now=None):
+    """Löscht Dateien im Unterordner verarbeitet/, die älter als keep_days Tage
+    sind (Alter = Änderungsdatum der Datei). keep_days 0 = nie löschen. Fasst
+    nur verarbeitet/ an, nie die Inbox selbst oder fehler/. Gibt die Anzahl
+    gelöschter Dateien zurück."""
+    if not inbox_dir or keep_days <= 0:
+        return 0
+    folder = Path(inbox_dir) / "verarbeitet"
+    if not folder.is_dir():
+        return 0
+    now = now if now is not None else time.time()
+    limit = now - keep_days * 86400
+    removed = 0
+    for path in folder.iterdir():
+        try:
+            if path.is_file() and not path.is_symlink() and path.stat().st_mtime < limit:
+                path.unlink()
+                removed += 1
+        except OSError:
+            continue
+    return removed
 
 
 def import_inbox(store, inbox_dir, now=None):

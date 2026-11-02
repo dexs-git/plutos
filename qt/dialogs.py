@@ -110,10 +110,24 @@ class TransactionDialog(QDialog):
         self.tags_edit.setCompleter(completer)
         grid.addWidget(self.tags_edit, 5, 1)
 
+        self.accounts = store.list_accounts()
+        grid.addWidget(QLabel(tr('Konto:')), 6, 0)
+        self.account_combo = QComboBox()
+        current_account = (existing["account_id"] if existing and existing["account_id"] is not None
+                           else store.default_account_id())
+        for acc in self.accounts:
+            self.account_combo.addItem(f"{acc['icon']} {acc['name']}", acc["id"])
+            if acc["id"] == current_account:
+                self.account_combo.setCurrentIndex(self.account_combo.count() - 1)
+        grid.addWidget(self.account_combo, 6, 1)
+        if len(self.accounts) < 2:      # ohne weitere Konten keine Auswahl anzeigen
+            self.account_combo.hide()
+            grid.itemAtPosition(6, 0).widget().hide()
+
         if not existing:
             self.recurring_check = QCheckBox(tr('Wiederkehrende Buchung'))
             self.recurring_check.toggled.connect(self._on_recurring_toggled)
-            grid.addWidget(self.recurring_check, 6, 0, 1, 2)
+            grid.addWidget(self.recurring_check, 7, 0, 1, 2)
 
             self.frequency_combo = QComboBox()
             self.frequency_combo.addItem(tr('Wöchentlich'), "woechentlich")
@@ -121,7 +135,7 @@ class TransactionDialog(QDialog):
             self.frequency_combo.addItem(tr('Jährlich'), "jaehrlich")
             self.frequency_combo.setCurrentIndex(1)
             self.frequency_combo.setEnabled(False)
-            grid.addWidget(self.frequency_combo, 7, 0, 1, 2)
+            grid.addWidget(self.frequency_combo, 8, 0, 1, 2)
         else:
             self.recurring_check = None
             if existing["recurring_template_id"] is not None:
@@ -129,12 +143,24 @@ class TransactionDialog(QDialog):
                     tr('Diese Buchung stammt aus einer wiederkehrenden Vorlage. Änderungen betreffen nur diese einzelne Buchung.')
                 )
                 note.setWordWrap(True)
-                grid.addWidget(note, 6, 0, 1, 2)
+                grid.addWidget(note, 7, 0, 1, 2)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    def find_similar(self):
+        """Bereits vorhandene Buchungen am selben Tag mit demselben Betrag (mögliche
+        Duplikate) – nur beim Anlegen einer einzelnen, nicht wiederkehrenden Buchung."""
+        if self.existing or (self.recurring_check is not None and self.recurring_check.isChecked()):
+            return []
+        kind = self.kind_combo.currentData()
+        raw = self.amount_spin.value()
+        amount = raw if kind == "einnahme" else -raw
+        if raw <= 0:
+            return []
+        return self.store.similar_transactions(_qdate_to_iso(self.date_edit.date()), amount)
 
     def _reload_categories(self, *_args, preselect=None):
         kind = self.kind_combo.currentData()
@@ -162,7 +188,8 @@ class TransactionDialog(QDialog):
         if self.existing:
             self.store.update_transaction(self.existing["id"], date_iso, amount,
                                            category_id, description,
-                                           tags=self.tags_edit.text())
+                                           tags=self.tags_edit.text(),
+                                           account_id=self.account_combo.currentData())
         elif self.recurring_check is not None and self.recurring_check.isChecked():
             frequency = self.frequency_combo.currentData()
             self.store.add_recurring_template(category_id, amount, description,
@@ -170,7 +197,8 @@ class TransactionDialog(QDialog):
                                                tags=self.tags_edit.text())
         else:
             self.store.add_transaction(date_iso, amount, category_id, description,
-                                       tags=self.tags_edit.text())
+                                       tags=self.tags_edit.text(),
+                                       account_id=self.account_combo.currentData())
 
 
 class RecurringTemplateEditDialog(QDialog):
@@ -788,3 +816,336 @@ class QuickTemplatesDialog(QDialog):
         if template_id is not None:
             self.store.delete_quick_template(template_id)
             self._reload()
+
+
+# ---------------------------------------------------------------------------
+# Konten & Umbuchungen
+# ---------------------------------------------------------------------------
+
+class AccountEditDialog(QDialog):
+    """Konto anlegen oder bearbeiten. Das Standardkonto nutzt das Startguthaben
+    aus der Finanzplanung, hier lässt sich nur Name und Symbol ändern."""
+
+    def __init__(self, parent, account=None):
+        super().__init__(parent)
+        self.account = account
+        self.is_default = bool(account and account["is_default"])
+        self.setWindowTitle(tr('Konto bearbeiten') if account else tr('Konto hinzufügen'))
+        self.setMinimumWidth(380)
+        layout = QVBoxLayout(self)
+        grid = QGridLayout()
+        layout.addLayout(grid)
+
+        grid.addWidget(QLabel(tr('Icon:')), 0, 0)
+        self.icon_edit = QLineEdit(account["icon"] if account else "🏦")
+        self.icon_edit.setMaxLength(4)
+        self.icon_edit.setFixedWidth(50)
+        grid.addWidget(self.icon_edit, 0, 1)
+        picker = QWidget()
+        picker_layout = QGridLayout(picker)
+        picker_layout.setContentsMargins(0, 0, 0, 0)
+        for i, emoji in enumerate(["🏦", "💰", "👛", "💳", "🐷", "📈", "🏠", "🎯"]):
+            btn = QToolButton()
+            btn.setText(emoji)
+            btn.setAutoRaise(True)
+            btn.clicked.connect(lambda checked=False, e=emoji: self.icon_edit.setText(e))
+            picker_layout.addWidget(btn, 0, i)
+        grid.addWidget(picker, 1, 1)
+
+        grid.addWidget(QLabel(tr('Name:')), 2, 0)
+        self.name_edit = QLineEdit(account["name"] if account else "")
+        grid.addWidget(self.name_edit, 2, 1)
+
+        self.amount_spin = QDoubleSpinBox()
+        self.amount_spin.setRange(-1_000_000, 1_000_000)
+        self.amount_spin.setDecimals(2)
+        self.amount_spin.setSuffix(" €")
+        self.amount_spin.setAlignment(Qt.AlignCenter)
+        self.date_edit = QDateEdit()
+        self.date_edit.setCalendarPopup(True)
+        self.date_edit.setDisplayFormat("dd.MM.yyyy")
+        self.date_edit.setAlignment(Qt.AlignCenter)
+        if self.is_default:
+            note = QLabel(tr('Startguthaben und Stichtag des Standardkontos stehen in der Finanzplanung.'))
+            note.setWordWrap(True)
+            grid.addWidget(note, 3, 0, 1, 2)
+        else:
+            grid.addWidget(QLabel(tr('Guthaben am Stichtag (€):')), 3, 0)
+            self.amount_spin.setValue(float(account["opening_amount"]) if account else 0.0)
+            grid.addWidget(self.amount_spin, 3, 1)
+            grid.addWidget(QLabel(tr('Stichtag:')), 4, 0)
+            iso = (account["opening_date"] if account and account["opening_date"]
+                   else datetime.date.today().isoformat())
+            self.date_edit.setDate(_iso_to_qdate(iso))
+            grid.addWidget(self.date_edit, 4, 1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def get_data(self):
+        name = self.name_edit.text().strip()
+        if not name:
+            return None
+        return {"name": name, "icon": self.icon_edit.text().strip() or "🏦",
+                "opening_amount": self.amount_spin.value(),
+                "opening_date": _qdate_to_iso(self.date_edit.date())}
+
+
+class TransferDialog(QDialog):
+    """Umbuchung zwischen zwei Konten (zählt nicht als Einnahme/Ausgabe)."""
+
+    def __init__(self, parent, store: FinanceStore, default_date=None):
+        super().__init__(parent)
+        self.setWindowTitle(tr('Umbuchung'))
+        self.setMinimumWidth(380)
+        accounts = store.list_accounts()
+        layout = QVBoxLayout(self)
+        grid = QGridLayout()
+        layout.addLayout(grid)
+        grid.addWidget(QLabel(tr('Von:')), 0, 0)
+        self.from_combo = QComboBox()
+        grid.addWidget(self.from_combo, 0, 1)
+        grid.addWidget(QLabel(tr('Nach:')), 1, 0)
+        self.to_combo = QComboBox()
+        grid.addWidget(self.to_combo, 1, 1)
+        for acc in accounts:
+            for combo in (self.from_combo, self.to_combo):
+                combo.addItem(f"{acc['icon']} {acc['name']}", acc["id"])
+        if len(accounts) > 1:
+            self.to_combo.setCurrentIndex(1)
+        grid.addWidget(QLabel(tr('Betrag (€):')), 2, 0)
+        self.amount_spin = QDoubleSpinBox()
+        self.amount_spin.setRange(0, 1_000_000)
+        self.amount_spin.setDecimals(2)
+        self.amount_spin.setSuffix(" €")
+        self.amount_spin.setAlignment(Qt.AlignCenter)
+        grid.addWidget(self.amount_spin, 2, 1)
+        grid.addWidget(QLabel(tr('Datum:')), 3, 0)
+        self.date_edit = QDateEdit()
+        self.date_edit.setCalendarPopup(True)
+        self.date_edit.setDisplayFormat("dd.MM.yyyy")
+        self.date_edit.setAlignment(Qt.AlignCenter)
+        d = default_date or datetime.date.today()
+        self.date_edit.setDate(QDate(d.year, d.month, d.day))
+        grid.addWidget(self.date_edit, 3, 1)
+        grid.addWidget(QLabel(tr('Beschreibung:')), 4, 0)
+        self.description_edit = QLineEdit()
+        grid.addWidget(self.description_edit, 4, 1)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def get_data(self):
+        return (_qdate_to_iso(self.date_edit.date()), self.amount_spin.value(),
+                self.from_combo.currentData(), self.to_combo.currentData(),
+                self.description_edit.text().strip())
+
+
+class AccountsDialog(QDialog):
+    """Konten verwalten und Umbuchungen erfassen."""
+
+    def __init__(self, parent, store: FinanceStore):
+        super().__init__(parent)
+        self.store = store
+        self.setWindowTitle(tr('Konten verwalten'))
+        self.resize(560, 520)
+        layout = QVBoxLayout(self)
+
+        layout.addWidget(QLabel(tr('Konten')))
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels([tr('Icon'), tr('Name'), tr('Saldo')])
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        layout.addWidget(self.table, 1)
+        row = QHBoxLayout()
+        for label, slot in ((tr('Hinzufügen'), self._on_add), (tr('Bearbeiten'), self._on_edit),
+                            (tr('Löschen'), self._on_delete), (tr('Umbuchung…'), self._on_transfer)):
+            btn = QPushButton(label)
+            btn.clicked.connect(slot)
+            row.addWidget(btn)
+        row.addStretch()
+        layout.addLayout(row)
+
+        layout.addWidget(QLabel(tr('Letzte Umbuchungen')))
+        self.transfer_table = QTableWidget(0, 4)
+        self.transfer_table.setHorizontalHeaderLabels([tr('Datum'), tr('Von → Nach'), tr('Betrag'), tr('Beschreibung')])
+        self.transfer_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        self.transfer_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.transfer_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.transfer_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        layout.addWidget(self.transfer_table, 1)
+        row = QHBoxLayout()
+        del_transfer = QPushButton(tr('Umbuchung löschen'))
+        del_transfer.clicked.connect(self._on_delete_transfer)
+        row.addWidget(del_transfer)
+        row.addStretch()
+        close = QPushButton(tr('Schließen'))
+        close.clicked.connect(self.accept)
+        row.addWidget(close)
+        layout.addLayout(row)
+        self._refresh()
+
+    def _refresh(self):
+        accounts = self.store.list_accounts()
+        self.table.setRowCount(len(accounts))
+        for r, acc in enumerate(accounts):
+            icon = QTableWidgetItem(acc["icon"])
+            icon.setData(Qt.UserRole, acc["id"])
+            self.table.setItem(r, 0, icon)
+            name = acc["name"] + (" " + tr('(Standard)') if acc["is_default"] else "")
+            self.table.setItem(r, 1, QTableWidgetItem(name))
+            bal = self.store.get_account_balance(acc["id"])
+            item = QTableWidgetItem(fmt_amount(bal) if bal is not None else "–")
+            item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self.table.setItem(r, 2, item)
+        transfers = self.store.list_transfers(limit=50)
+        self.transfer_table.setRowCount(len(transfers))
+        for r, t in enumerate(transfers):
+            d = datetime.date.fromisoformat(t["date"]).strftime("%d.%m.%Y")
+            first = QTableWidgetItem(d)
+            first.setData(Qt.UserRole, t["id"])
+            self.transfer_table.setItem(r, 0, first)
+            self.transfer_table.setItem(r, 1, QTableWidgetItem(
+                f"{t['from_icon']} {t['from_name']} → {t['to_icon']} {t['to_name']}"))
+            amount = QTableWidgetItem(fmt_amount(t["amount"]))
+            amount.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self.transfer_table.setItem(r, 2, amount)
+            self.transfer_table.setItem(r, 3, QTableWidgetItem(t["description"] or ""))
+
+    def _selected_account_id(self):
+        r = self.table.currentRow()
+        return self.table.item(r, 0).data(Qt.UserRole) if r >= 0 else None
+
+    def _error(self, exc):
+        QMessageBox.warning(self, tr('Konten verwalten'), tr(str(exc)))
+
+    def _on_add(self):
+        dialog = AccountEditDialog(self)
+        if dialog.exec() == QDialog.Accepted:
+            data = dialog.get_data()
+            if data:
+                try:
+                    self.store.add_account(data["name"], data["icon"], data["opening_amount"], data["opening_date"])
+                except ValueError as exc:
+                    self._error(exc)
+                self._refresh()
+
+    def _on_edit(self):
+        acc_id = self._selected_account_id()
+        if acc_id is None:
+            return
+        dialog = AccountEditDialog(self, self.store.get_account(acc_id))
+        if dialog.exec() == QDialog.Accepted:
+            data = dialog.get_data()
+            if data:
+                try:
+                    self.store.update_account(acc_id, data["name"], data["icon"],
+                                              data["opening_amount"], data["opening_date"])
+                except ValueError as exc:
+                    self._error(exc)
+                self._refresh()
+
+    def _on_delete(self):
+        acc_id = self._selected_account_id()
+        if acc_id is None:
+            return
+        try:
+            self.store.delete_account(acc_id)
+        except ValueError as exc:
+            self._error(exc)
+        self._refresh()
+
+    def _on_transfer(self):
+        if len(self.store.list_accounts()) < 2:
+            QMessageBox.information(self, tr('Umbuchung'), tr('Für eine Umbuchung brauchst du mindestens zwei Konten.'))
+            return
+        dialog = TransferDialog(self, self.store)
+        if dialog.exec() == QDialog.Accepted:
+            try:
+                self.store.add_transfer(*dialog.get_data())
+            except ValueError as exc:
+                self._error(exc)
+            self._refresh()
+
+    def _on_delete_transfer(self):
+        r = self.transfer_table.currentRow()
+        if r < 0:
+            return
+        self.store.delete_transfer(self.transfer_table.item(r, 0).data(Qt.UserRole))
+        self._refresh()
+
+
+# ---------------------------------------------------------------------------
+# Importierte Buchungen prüfen
+# ---------------------------------------------------------------------------
+
+class ImportReviewDialog(QDialog):
+    """Zeigt die zuletzt aus der Inbox importierten Buchungen; mögliche Duplikate
+    sind markiert und lassen sich hier direkt löschen."""
+
+    def __init__(self, parent, store: FinanceStore, ids, duplicate_ids):
+        super().__init__(parent)
+        self.store = store
+        self.ids = list(ids)
+        self.duplicate_ids = set(duplicate_ids)
+        self.deleted = 0
+        self.setWindowTitle(tr('Importierte Buchungen'))
+        self.resize(640, 420)
+        layout = QVBoxLayout(self)
+        hint = QLabel(tr('Markierte Zeilen haben am selben Tag einen anderen Eintrag mit demselben Betrag – mögliche Duplikate. Wähle Buchungen aus und lösche sie, wenn sie doppelt sind.'))
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels([tr('Datum'), tr('Kategorie'), tr('Beschreibung'), tr('Betrag'), tr('Hinweis')])
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        layout.addWidget(self.table, 1)
+        row = QHBoxLayout()
+        delete = QPushButton(tr('Ausgewählte löschen'))
+        delete.clicked.connect(self._on_delete)
+        row.addWidget(delete)
+        row.addStretch()
+        close = QPushButton(tr('Schließen'))
+        close.clicked.connect(self.accept)
+        row.addWidget(close)
+        layout.addLayout(row)
+        self._refresh()
+
+    def _refresh(self):
+        rows = [self.store.get_transaction(i) for i in self.ids]
+        rows = [r for r in rows if r is not None]
+        cats = {c["id"]: c for c in self.store.list_categories()}
+        self.table.setRowCount(len(rows))
+        for r, t in enumerate(rows):
+            cat = cats.get(t["category_id"])
+            first = QTableWidgetItem(datetime.date.fromisoformat(t["date"]).strftime("%d.%m.%Y"))
+            first.setData(Qt.UserRole, t["id"])
+            self.table.setItem(r, 0, first)
+            self.table.setItem(r, 1, QTableWidgetItem(f"{cat['icon']} {cat['name']}" if cat else ""))
+            self.table.setItem(r, 2, QTableWidgetItem(t["description"] or ""))
+            amount = QTableWidgetItem(fmt_amount(t["amount"]))
+            amount.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self.table.setItem(r, 3, amount)
+            dup = t["id"] in self.duplicate_ids
+            self.table.setItem(r, 4, QTableWidgetItem(tr('Mögliches Duplikat') if dup else ""))
+            if dup:
+                for c in range(5):
+                    self.table.item(r, c).setBackground(Qt.darkYellow)
+                    self.table.item(r, c).setForeground(Qt.white)
+
+    def _on_delete(self):
+        rows = sorted({i.row() for i in self.table.selectedItems()})
+        if not rows:
+            return
+        for r in rows:
+            tx_id = self.table.item(r, 0).data(Qt.UserRole)
+            self.store.delete_transaction(tx_id)
+            self.deleted += 1
+        self.ids = [i for i in self.ids if self.store.get_transaction(i) is not None]
+        self._refresh()

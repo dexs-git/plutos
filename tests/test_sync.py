@@ -146,3 +146,30 @@ def test_cleanup_processed_only_old_files_in_verarbeitet(env):
     assert old.exists()
     assert sync_tools.cleanup_processed(inbox, 14, now) == 1
     assert not old.exists() and new.exists() and keep_err.exists() and keep_inbox.exists()
+
+
+def test_inbox_items_duplicates_and_account(env):
+    db, st, tmp_path = env
+    store = _store(db, tmp_path / "t.db")
+    store.get_or_create_category("Essen", "ausgabe", "•")
+    tag = store.add_account("Tagesgeld")
+    food = store.conn.execute("SELECT id FROM categories WHERE name='Essen'").fetchone()["id"]
+    store.add_transaction("2026-05-01", -12.5, food, "schon da")
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    f1 = inbox / "a.txt"
+    f1.write_text("12,50;Essen;Doppelt;;01.05.2026\n3;Essen;Neu;;02.05.2026;Tagesgeld\n")
+    old = time.time() - 60
+    os.utime(f1, (old, old))
+    result = st.import_inbox(store, inbox)
+    assert result["imported"] == 2 and len(result["ids"]) == 2
+    assert result["duplicates"] == 1
+    dup = store.get_transaction(result["duplicate_ids"][0])
+    assert dup["description"] == "Doppelt"
+    neu = store.get_transaction(result["ids"][1])
+    assert neu["account_id"] == tag
+    bad = inbox / "b.txt"
+    bad.write_text("5;Essen;x;;;Gibtsnicht\n")
+    os.utime(bad, (old, old))
+    result = st.import_inbox(store, inbox)
+    assert result["errors"] and "Konto" in result["errors"][0][1]

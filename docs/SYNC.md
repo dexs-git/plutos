@@ -29,11 +29,12 @@ Eine Buchung pro Zeile: `Betrag;Kategorie;Beschreibung;Tags;Datum`
 
 - Nur Betrag und Kategorie sind Pflicht. Datum leer = Datum der Datei.
 - Das Vorzeichen ergibt sich aus der Kategorie (Ausgabe → negativ, Einnahme → positiv).
+- Optional als sechstes Feld das **Konto** (z. B. `Tagesgeld`); ohne Angabe landet die Buchung im Standardkonto. Ein unbekannter Kontoname ist ein Fehler.
 - Unbekannte Kategorien führen zu einem Fehler (die Datei wandert nach `fehler/`).
 
 ### JSON-Format (`.json`)
 
-Ein Objekt oder eine Liste von Objekten. Schlüssel (deutsch oder englisch): `datum`/`date`, `betrag`/`amount`, `kategorie`/`category`, `beschreibung`/`description`/`text`, `tags`, `art`/`kind`, `id`.
+Ein Objekt oder eine Liste von Objekten. Schlüssel (deutsch oder englisch): `konto`/`account`, `datum`/`date`, `betrag`/`amount`, `kategorie`/`category`, `beschreibung`/`description`/`text`, `tags`, `art`/`kind`, `id`.
 
 ```json
 {"betrag": 12.5, "kategorie": "Essen", "beschreibung": "Bäcker", "id": "handy-0001"}
@@ -55,3 +56,7 @@ Mit `id` wird dieselbe Buchung nie doppelt importiert.
 **Automation für das Heimnetz:** Kurzbefehle → Automation → WLAN → dein Heimnetz, „Beigetreten“ → „Sofort ausführen“. Aktionen: Synctrain „Ordner erneut scannen“ (Sync-Ordner) und „Eine Weile synchronisieren“ (maximal 15 Sekunden). Unterwegs bleibt die Datei im Ordner liegen und wird beim Betreten des Heimnetzes übertragen.
 
 Eingelesene Dateien verschiebt Plutos nach `inbox/verarbeitet/` und räumt sie dort nach einigen Tagen selbst weg (einstellbar).
+
+## Nach dem Import
+
+Auf der Übersicht erscheint eine Karte „Neu aus der Inbox“ mit der Zahl der importierten Buchungen. „Anzeigen“ öffnet eine Liste dieser Buchungen. Hat eine davon am selben Tag denselben Betrag wie eine andere Buchung, ist sie als **mögliches Duplikat** markiert – etwa wenn du dieselbe Ausgabe am Handy und am PC erfasst hast. Markierte Zeilen lassen sich dort direkt löschen. Die Karte verschwindet mit „Ausblenden“.

@@ -70,6 +70,8 @@ class SyncConfig:
         self.loaded = dict(data.get("loaded", {}))     # Geräte-ID -> geladener Stand
         self.ignored = dict(data.get("ignored", {}))   # Geräte-ID -> ignorierter Stand
         self.auto_import_inbox = bool(data.get("auto_import_inbox", True))
+        self.check_updates = bool(data.get("check_updates", True))      # Update-Hinweis beim Start
+        self.update_skipped = data.get("update_skipped", "") or ""      # übersprungene Version (Tag)
         try:
             self.processed_keep_days = max(0, int(data.get("processed_keep_days", 14)))
         except (TypeError, ValueError):
@@ -84,6 +86,7 @@ class SyncConfig:
             "last_saved_at": self.last_saved_at, "loaded": self.loaded,
             "ignored": self.ignored, "auto_import_inbox": self.auto_import_inbox,
             "processed_keep_days": self.processed_keep_days,
+            "check_updates": self.check_updates, "update_skipped": self.update_skipped,
         }
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_name(self.path.name + ".tmp")
@@ -279,6 +282,7 @@ _KEYS = {
     "tags": "tags", "tag": "tags",
     "datum": "date", "date": "date",
     "id": "id", "art": "kind", "kind": "kind",
+    "konto": "account", "account": "account",
 }
 
 
@@ -308,6 +312,8 @@ def _entries_from_text(text):
             entry["tags"] = parts[3]
         if len(parts) > 4 and parts[4]:
             entry["date"] = parts[4]
+        if len(parts) > 5 and parts[5]:
+            entry["account"] = parts[5]
         entries.append(entry)
     return entries
 
@@ -342,11 +348,18 @@ def _resolve_entry(store, entry, default_date):
     else:
         category_id, kind = match["id"], match["kind"]
     amount = abs(amount) if kind == "einnahme" else -abs(amount)
+    account_id = None
+    account_name = str(entry.get("account", "")).strip()
+    if account_name:
+        account_id = store.resolve_account_id(account_name)
+        if account_id is None:
+            raise ValueError(f"Konto „{account_name}“ unbekannt")
     date = parse_date(entry["date"]) if entry.get("date") else default_date
     return {
         "date": date.isoformat(), "amount": round(amount, 2), "category_id": category_id,
         "description": str(entry.get("description", "")).strip(),
         "tags": entry.get("tags", ""), "id": str(entry["id"]).strip() if entry.get("id") else None,
+        "account_id": account_id,
     }
 
 
@@ -389,7 +402,7 @@ def import_inbox(store, inbox_dir, now=None):
                "errors": [(Dateiname, Grund), …]}.
     Eine Datei wird nur ganz oder gar nicht importiert. Entdeckt eine Datei
     einen Fehler, wandert sie samt Fehlertext nach fehler/."""
-    result = {"imported": 0, "files": 0, "errors": []}
+    result = {"imported": 0, "files": 0, "errors": [], "ids": [], "duplicates": 0}
     inbox = Path(inbox_dir) if inbox_dir else None
     if not inbox or not inbox.is_dir():
         return result
@@ -423,14 +436,23 @@ def import_inbox(store, inbox_dir, now=None):
                 if store.conn.execute("SELECT 1 FROM inbox_imports WHERE id = ?", (r["id"],)).fetchone():
                     continue    # schon importiert (z. B. doppelt übertragen)
                 store.conn.execute("INSERT INTO inbox_imports (id) VALUES (?)", (r["id"],))
-            store.add_transaction(r["date"], r["amount"], r["category_id"], r["description"],
-                                  tags=r["tags"])
+            new_id = store.add_transaction(r["date"], r["amount"], r["category_id"],
+                                           r["description"], tags=r["tags"],
+                                           account_id=r["account_id"])
+            result["ids"].append(new_id)
             result["imported"] += 1
         store.conn.commit()
         done_dir = inbox / "verarbeitet"
         done_dir.mkdir(exist_ok=True)
         shutil.move(str(path), _unique_target(done_dir, path.name))
         result["files"] += 1
+    # Mögliche Duplikate: eine andere Buchung am selben Tag mit demselben Betrag
+    result["duplicate_ids"] = []
+    for new_id in result["ids"]:
+        row = store.get_transaction(new_id)
+        if row and store.similar_transactions(row["date"], row["amount"], exclude_id=new_id):
+            result["duplicate_ids"].append(new_id)
+    result["duplicates"] = len(result["duplicate_ids"])
     return result
 
 
@@ -450,6 +472,9 @@ def describe_inbox_result(result, tr):
     if result["imported"]:
         lines.append(tr('{0} Buchung(en) aus {1} Datei(en) importiert.').format(
             result["imported"], result["files"]))
+    if result.get("duplicates"):
+        lines.append(tr('{0} davon sind mögliche Duplikate (gleicher Tag, gleicher Betrag).').format(
+            result["duplicates"]))
     if result["errors"]:
         detail = "; ".join(f"{name}: {reason}" for name, reason in result["errors"][:5])
         lines.append(tr('Fehlerhafte Dateien ({0}): {1} – sie liegen im Unterordner „fehler“.').format(

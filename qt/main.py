@@ -24,6 +24,7 @@ Start:
 
 import sys
 import datetime
+import threading
 import html as _html
 from pathlib import Path
 import re
@@ -36,11 +37,15 @@ from PySide6.QtWidgets import (
     QMessageBox, QGroupBox, QProgressBar, QSizePolicy, QDateEdit, QInputDialog,
     QListWidget, QListWidgetItem, QFrame,
 )
-from PySide6.QtCore import Qt, QDate, QSize, QLocale, QTimer
+from PySide6.QtCore import Qt, QDate, QSize, QLocale, QTimer, Signal, Slot
+from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import QUrl
 from PySide6.QtGui import QIcon, QColor, QTextCharFormat, QPalette, QShortcut, QKeySequence, QFontMetrics
 
-from db import FinanceStore, add_months, DATA_DIR
+from db import FinanceStore, add_months, DATA_DIR, year_summary_lines
 import sync_tools
+import update_check
+from version import APP_VERSION
 from i18n import tr, set_language, get_language, LANGUAGES, months, months_short, weekdays, weekdays_short
 import theme
 from theme import (
@@ -54,7 +59,7 @@ from charts import (
 from dialogs import (
     TransactionDialog, RecurringTemplatesDialog, BudgetDialog, GoalDialog,
     ContributionDialog, CategoryManagerDialog, QuickTemplatesDialog, make_help_button,
-    ReminderSettingsDialog,
+    ReminderSettingsDialog, AccountsDialog, ImportReviewDialog,
 )
 
 
@@ -110,6 +115,8 @@ class PageTabs(QTabWidget):
 
 
 class MainWindow(QMainWindow):
+    update_found = Signal(object)   # aus dem Hintergrund-Thread der Update-Prüfung
+
     def __init__(self):
         super().__init__()
         self.resize(1180, 760)
@@ -126,10 +133,13 @@ class MainWindow(QMainWindow):
 
         self.sync_cfg = sync_tools.SyncConfig(DATA_DIR / "sync.json")
         self._startup_messages = []
+        self._import_result = None       # letztes Inbox-Ergebnis (für die Hinweis-Karte)
         try:  # Sync/Inbox dürfen den Start nie verhindern
             self._sync_startup()
         except Exception as exc:
             print(f"Sync beim Start fehlgeschlagen: {exc}")
+        self.update_found.connect(self._on_update_found)
+        QTimer.singleShot(1500, self._start_update_check)
 
         self.selected_day = datetime.date.today()
         self.stats_month = datetime.date.today().replace(day=1)
@@ -335,6 +345,104 @@ class MainWindow(QMainWindow):
             lay.addWidget(label)
         return card
 
+    def _notice_card(self, title, lines, buttons):
+        """Kleine Hinweis-Karte: Titel, Textzeilen, Link-Buttons rechts im Kopf."""
+        card, lay = make_card()
+        row = QHBoxLayout()
+        label = QLabel(title)
+        label.setObjectName("cardTitle")
+        row.addWidget(label, 1)
+        for text, callback in buttons:
+            row.addWidget(make_link_button(text, callback))
+        lay.addLayout(row)
+        for text in lines:
+            lab = QLabel(text)
+            lab.setObjectName("kpiSub")
+            lab.setWordWrap(True)
+            lay.addWidget(lab)
+        return card
+
+    def _import_notice_card(self, result):
+        lines = [tr('{0} Buchung(en) aus {1} Datei(en) importiert.').format(result["imported"], result["files"])]
+        if result.get("duplicates"):
+            lines.append(tr('{0} davon sind mögliche Duplikate (gleicher Tag, gleicher Betrag).').format(result["duplicates"]))
+        return self._notice_card(tr('Neu aus der Inbox'), lines, [
+            (tr('Anzeigen'), self._on_show_import_review),
+            (tr('Ausblenden'), self._dismiss_import_notice)])
+
+    def _on_show_import_review(self):
+        result = self._import_result
+        if not result:
+            return
+        dialog = ImportReviewDialog(self, self.store, result["ids"], result.get("duplicate_ids", []))
+        dialog.exec()
+        if dialog.deleted:
+            self._refresh_after_data_change()
+            self._refresh_stats()
+
+    def _dismiss_import_notice(self):
+        self._import_result = None
+        self._refresh_dashboard()
+
+    def _year_summary_card(self, ys):
+        t = theme.current()
+        card, lay = make_card()
+        row = QHBoxLayout()
+        title = QLabel(tr('Jahresabschluss {0}').format(ys["year"]))
+        title.setObjectName("cardTitle")
+        row.addWidget(title, 1)
+        row.addWidget(make_link_button(tr('Auswertungen'), lambda: self._open_year_summary(ys["year"])))
+        row.addWidget(make_link_button(tr('Ausblenden'), lambda: self._dismiss_year_summary(ys["year"])))
+        lay.addLayout(row)
+        head = QLabel(tr('Gespart {0}').format(fmt_amount(ys["saved"])))
+        head.setStyleSheet(f"font-size: 20px; font-weight: 600; color: {t['positive'] if ys['saved'] >= 0 else t['negative']};")
+        lay.addWidget(head)
+        for text in year_summary_lines(ys, tr, fmt_amount, months()):
+            label = QLabel(text)
+            label.setObjectName("kpiSub")
+            label.setWordWrap(True)
+            lay.addWidget(label)
+        return card
+
+    def _open_year_summary(self, year):
+        self.stats_month = datetime.date(year, 1, 1)
+        self._go_to("stats")
+        self.stats_view_combo.setCurrentIndex(self.stats_view_combo.findData("jahresabschluss"))
+        self._refresh_stats()
+
+    def _dismiss_year_summary(self, year):
+        self.store.dismiss_year_summary(year)
+        self._refresh_dashboard()
+
+    # -- Update-Hinweis ---------------------------------------------------------
+
+    def _start_update_check(self):
+        if not self.sync_cfg.check_updates:
+            return
+
+        def work():
+            found = update_check.check_for_update(APP_VERSION, self.sync_cfg.update_skipped)
+            if found:
+                self.update_found.emit(found)
+        threading.Thread(target=work, daemon=True).start()
+
+    @Slot(object)
+    def _on_update_found(self, found):
+        box = QMessageBox(self)
+        box.setWindowTitle(tr('Neue Version verfügbar'))
+        box.setIcon(QMessageBox.Information)
+        box.setText(tr('Plutos {0} ist erschienen (installiert: {1}).').format(found["tag"].lstrip("v"), APP_VERSION))
+        open_btn = box.addButton(tr('Zur Download-Seite'), QMessageBox.AcceptRole)
+        skip_btn = box.addButton(tr('Diese Version überspringen'), QMessageBox.DestructiveRole)
+        box.addButton(tr('Später'), QMessageBox.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is open_btn:
+            QDesktopServices.openUrl(QUrl(found["url"]))
+        elif clicked is skip_btn:
+            self.sync_cfg.update_skipped = found["tag"]
+            self.sync_cfg.save()
+
     def _dismiss_month_summary(self, month):
         self.store.dismiss_month_summary(month)
         self._refresh_dashboard()
@@ -459,20 +567,35 @@ class MainWindow(QMainWindow):
         if reminders:
             grid.addWidget(self._reminders_card(reminders), 1, 0, 1, 6)
 
-        # --- Monatsabschluss (Vormonat, bis er ausgeblendet wird) -----------
+        # --- Hinweise: Inbox-Import, Jahres- und Monatsabschluss -------------
+        extras = []
+        if self._import_result:
+            extras.append(self._import_notice_card(self._import_result))
+        year_summary = self.store.pending_year_summary()
+        if year_summary:
+            extras.append(self._year_summary_card(year_summary))
         summary = self.store.pending_month_summary()
         if summary:
-            grid.addWidget(self._month_summary_card(summary), 2, 0, 1, 6)
+            extras.append(self._month_summary_card(summary))
+        if extras:
+            wrapper = QWidget()
+            wrapper_lay = QVBoxLayout(wrapper)
+            wrapper_lay.setContentsMargins(0, 0, 0, 0)
+            wrapper_lay.setSpacing(14)
+            for card in extras:
+                wrapper_lay.addWidget(card)
+            grid.addWidget(wrapper, 2, 0, 1, 6)
 
         # --- Kennzahlen ---------------------------------------------------
         bd = d["balance"]
         if bd is None:
             card1, _ = self._kpi_card(tr('Kontostand'), "–",
                                       tr('Kontostand in der Finanzplanung hinterlegen'))
-        elif d["pocket_enabled"]:
-            card1, _ = self._kpi_card(
-                tr('Gesamtvermögen'), fmt_amount(bd["total"]),
-                tr('Girokonto {0} · Notgroschen {1}').format(fmt_amount(bd["giro"]), fmt_amount(bd["pocket"])))
+        elif d["pocket_enabled"] or len(bd["accounts"]) > 1:
+            parts = [f"{a['name']} {fmt_amount(a['balance'])}" for a in bd["accounts"] if a["balance"] is not None]
+            if d["pocket_enabled"]:
+                parts.append(f"{tr('Notgroschen')} {fmt_amount(bd['pocket'])}")
+            card1, _ = self._kpi_card(tr('Gesamtvermögen'), fmt_amount(bd["total"]), " · ".join(parts))
         else:
             card1, _ = self._kpi_card(tr('Kontostand'), fmt_amount(bd["giro"]), tr('Berechnet bis heute'))
         grid.addWidget(card1, 3, 0, 1, 2)
@@ -963,10 +1086,23 @@ class MainWindow(QMainWindow):
 
     def _on_add_transaction(self):
         dialog = TransactionDialog(self, self.store, datetime.date.today())
-        if dialog.exec() == TransactionDialog.Accepted:
+        while dialog.exec() == TransactionDialog.Accepted:
+            similar = dialog.find_similar()
+            if similar:
+                first = similar[0]
+                answer = QMessageBox.question(
+                    self, tr('Mögliches Duplikat'),
+                    tr('Am {0} gibt es schon eine Buchung über {1} ({2}).\n\nTrotzdem speichern?').format(
+                        datetime.date.fromisoformat(first["date"]).strftime("%d.%m.%Y"),
+                        fmt_amount(abs(first["amount"])),
+                        (first["description"] or first["category_name"]).strip()),
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                if answer != QMessageBox.Yes:
+                    continue     # Dialog mit den eingegebenen Werten erneut zeigen
             dialog.save()
             self._after_transactions_changed()
             self._warn_if_budget_crossed(dialog.last_saved, is_new=True)
+            break
 
     def _on_edit_selected_transaction(self):
         tx_id = self._selected_transaction_id()
@@ -1443,6 +1579,10 @@ class MainWindow(QMainWindow):
         apply_balance_btn.clicked.connect(self._on_apply_balance_to_recommendation)
         balance_grid.addWidget(apply_balance_btn, 4, 0, 1, 3)
 
+        accounts_btn = QPushButton(tr('Konten verwalten…'))
+        accounts_btn.clicked.connect(self._on_manage_accounts)
+        balance_grid.addWidget(accounts_btn, 7, 0, 1, 3)
+
         balance_hint = QLabel(
             tr('Praktisch, wenn du gerade erst anfängst, für etwas zu sparen, einen Notgroschen aufzubauen oder in ETFs zu investieren: so zählt dein tatsächlich vorhandenes Geld, nicht nur das, was du seit Nutzung von Plutos gebucht hast.')
         )
@@ -1607,18 +1747,27 @@ class MainWindow(QMainWindow):
         else:
             text = tr('Aktueller Kontostand (berechnet): {0}').format(fmt_amount(balance))
             bd = self.store.get_balance_breakdown()
-            if bd and self.store.notgroschen_pocket_enabled():
-                text = (tr('Girokonto: {0}\nNotgroschen-Unterkonto: {1}\nGesamt: {2}').format(fmt_amount(bd['giro']), fmt_amount(bd['pocket']), fmt_amount(bd['total'])))
+            if bd and (self.store.notgroschen_pocket_enabled() or len(bd["accounts"]) > 1):
+                lines = [f"{a['name']}: {fmt_amount(a['balance'])}" for a in bd["accounts"]]
+                if self.store.notgroschen_pocket_enabled():
+                    lines.append(tr('Notgroschen-Unterkonto: {0}').format(fmt_amount(bd['pocket'])))
+                lines.append(tr('Gesamt: {0}').format(fmt_amount(bd['total'])))
+                text = "\n".join(lines)
             self.current_balance_label.setText(text)
+
+    def _on_manage_accounts(self):
+        AccountsDialog(self, self.store).exec()
+        self._refresh_current_balance_display()
+        self._refresh_dashboard()
 
     def _on_toggle_pocket(self, checked):
         self.store.set_notgroschen_pocket(checked)
         self._refresh_current_balance_display()
 
     def _on_apply_balance_to_recommendation(self):
-        balance = self.store.get_current_account_balance()
-        if balance is not None:
-            self.planning_capital_spin.setValue(max(0.0, balance))
+        bd = self.store.get_balance_breakdown()
+        if bd is not None:
+            self.planning_capital_spin.setValue(max(0.0, bd["total"] - bd["pocket"]))
 
     def _on_recalc_fixed_costs(self):
         self.planning_fixed_costs_spin.setValue(self.store.estimate_monthly_fixed_costs())
@@ -2151,6 +2300,7 @@ class MainWindow(QMainWindow):
         self.stats_view_combo.addItem(tr('Jahresübersicht (mit Vorjahr)'), "jahresvergleich")
         self.stats_view_combo.addItem(tr('Budgets im Jahr'), "budgetjahr")
         self.stats_view_combo.addItem(tr('Tags'), "tags")
+        self.stats_view_combo.addItem(tr('Jahresabschluss'), "jahresabschluss")
         self.stats_view_combo.currentIndexChanged.connect(self._on_stats_view_changed)
         switcher_box.addWidget(self.stats_view_combo)
         switcher_box.addStretch()
@@ -2165,6 +2315,7 @@ class MainWindow(QMainWindow):
         self.stats_stack.addWidget(self._build_year_compare_section())
         self.stats_stack.addWidget(self._build_budget_year_section())
         self.stats_stack.addWidget(self._build_tags_section())
+        self.stats_stack.addWidget(self._build_year_summary_section())
 
         self._refresh_stats()
         return root
@@ -2429,6 +2580,33 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.budgetyear_summary)
         return section
 
+    def _build_year_summary_section(self):
+        section = QWidget()
+        layout = QVBoxLayout(section)
+        self._year_nav(layout, "yearsummary_label")
+        self.yearsummary_head = QLabel()
+        layout.addWidget(self.yearsummary_head)
+        self.yearsummary_body = QLabel()
+        self.yearsummary_body.setWordWrap(True)
+        self.yearsummary_body.setObjectName("kpiSub")
+        layout.addWidget(self.yearsummary_body)
+        layout.addStretch()
+        return section
+
+    def _refresh_year_summary_view(self):
+        year = self.stats_month.year
+        self.yearsummary_label.setText(tr('Jahresabschluss {0}').format(year))
+        ys = self.store.year_summary(year)
+        t = theme.current()
+        if not ys["count"]:
+            self.yearsummary_head.setText("")
+            self.yearsummary_body.setText(tr('Für {0} gibt es keine Buchungen.').format(year))
+            return
+        self.yearsummary_head.setText(tr('Gespart {0}').format(fmt_amount(ys["saved"])))
+        self.yearsummary_head.setStyleSheet(
+            f"font-size: 20px; font-weight: 600; color: {t['positive'] if ys['saved'] >= 0 else t['negative']};")
+        self.yearsummary_body.setText("\n\n".join(year_summary_lines(ys, tr, fmt_amount, months())))
+
     def _refresh_budget_year(self):
         year = self.stats_month.year
         self.budgetyear_label.setText(str(year))
@@ -2628,6 +2806,7 @@ class MainWindow(QMainWindow):
         self._refresh_year_compare()
         self._refresh_budget_year()
         self._refresh_tags()
+        self._refresh_year_summary_view()
 
     # =====================================================================
     # Tab: Suche (alle Buchungen filtern)
@@ -2861,6 +3040,8 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             print(f"Aufräumen der Inbox fehlgeschlagen: {exc}")
         result = sync_tools.import_inbox(self.store, inbox)
+        if result["imported"]:
+            self._import_result = result
         lines = sync_tools.describe_inbox_result(result, tr)
         if startup:
             self._startup_messages.extend(lines)
@@ -2879,6 +3060,10 @@ class MainWindow(QMainWindow):
         if path:
             edit.setText(path)
             self._save_sync_settings()
+
+    def _on_toggle_update_check(self, checked):
+        self.sync_cfg.check_updates = bool(checked)
+        self.sync_cfg.save()
 
     def _save_sync_settings(self):
         cfg = self.sync_cfg
@@ -3066,6 +3251,13 @@ class MainWindow(QMainWindow):
         theme_row.addWidget(self.theme_combo)
         theme_row.addStretch()
         lay.addLayout(theme_row)
+
+        lay = section(tr('Updates'))
+        text(lay, tr('Installierte Version: {0}').format(APP_VERSION))
+        self.update_check_box = QCheckBox(tr('Beim Start nach einer neuen Version suchen (fragt nur GitHub ab, sendet keine Daten)'))
+        self.update_check_box.setChecked(self.sync_cfg.check_updates)
+        self.update_check_box.toggled.connect(self._on_toggle_update_check)
+        lay.addWidget(self.update_check_box)
 
         self.export_status_label = QLabel()
         self.export_status_label.setWordWrap(True)

@@ -1053,4 +1053,108 @@ EN = {
         'Faulty files ({0}): {1} – they are in the subfolder “fehler”.',
     'Verarbeitete Dateien löschen nach (Tagen, 0 = nie):':
         'Delete processed files after (days, 0 = never):',
+    '(Standard)':
+        '(default)',
+    'Am {0} gibt es schon eine Buchung über {1} ({2}).\n\nTrotzdem speichern?':
+        'There is already a booking of {1} on {0} ({2}).\n\nSave anyway?',
+    'Anzeigen':
+        'Show',
+    'Ausgaben {0}{1:.0f} % gegenüber {2}':
+        'Expenses {0}{1:.0f} % compared to {2}',
+    'Ausgewählte löschen':
+        'Delete selected',
+    'Beim Start nach einer neuen Version suchen (fragt nur GitHub ab, sendet keine Daten)':
+        'Check for a new version on start (only queries GitHub, sends no data)',
+    'Bester Sparmonat: {0} ({1})':
+        'Best saving month: {0} ({1})',
+    'Diese Version überspringen':
+        'Skip this version',
+    'Durchschnittliche Ausgaben pro Monat: {0}':
+        'Average expenses per month: {0}',
+    'Für eine Umbuchung brauchst du mindestens zwei Konten.':
+        'A transfer needs at least two accounts.',
+    'Für {0} gibt es keine Buchungen.':
+        'There are no bookings for {0}.',
+    'Gesamt: <b>{0}</b>':
+        'Total: <b>{0}</b>',
+    'Gesamt: {0}':
+        'Total: {0}',
+    'Größte Ausgaben: {0}':
+        'Biggest expenses: {0}',
+    'Guthaben am Stichtag (€):':
+        'Balance on the reference date (€):',
+    'Hinweis':
+        'Note',
+    'Importierte Buchungen':
+        'Imported bookings',
+    'In Sparziele eingezahlt: {0}':
+        'Paid into savings goals: {0}',
+    'Installierte Version: {0}':
+        'Installed version: {0}',
+    'Jahresabschluss':
+        'Year summary',
+    'Jahresabschluss {0}':
+        'Year summary {0}',
+    'Konten':
+        'Accounts',
+    'Konten verwalten':
+        'Manage accounts',
+    'Konten verwalten…':
+        'Manage accounts…',
+    'Konto bearbeiten':
+        'Edit account',
+    'Konto hinzufügen':
+        'Add account',
+    'Konto:':
+        'Account:',
+    'Letzte Umbuchungen':
+        'Recent transfers',
+    'Markierte Zeilen haben am selben Tag einen anderen Eintrag mit demselben Betrag – mögliche Duplikate. Wähle Buchungen aus und lösche sie, wenn sie doppelt sind.':
+        'Highlighted rows have another entry with the same amount on the same day – possible duplicates. Select bookings and delete them if they are duplicates.',
+    'Mögliches Duplikat':
+        'Possible duplicate',
+    'Nach:':
+        'To:',
+    'Neu aus der Inbox':
+        'New from the inbox',
+    'Neue Version verfügbar':
+        'New version available',
+    'Notgroschen-Unterkonto: <b>{0}</b>':
+        'Emergency-fund sub-account: <b>{0}</b>',
+    'Notgroschen-Unterkonto: {0}':
+        'Emergency-fund sub-account: {0}',
+    'Plutos {0} ist erschienen (installiert: {1}).':
+        'Plutos {0} has been released (installed: {1}).',
+    'Startguthaben und Stichtag des Standardkontos stehen in der Finanzplanung.':
+        'The opening balance and reference date of the default account are set in financial planning.',
+    'Teuerster Monat: {0} ({1})':
+        'Most expensive month: {0} ({1})',
+    'Umbuchung':
+        'Transfer',
+    'Umbuchung löschen':
+        'Delete transfer',
+    'Umbuchung…':
+        'Transfer…',
+    'Updates':
+        'Updates',
+    'Von → Nach':
+        'From → To',
+    'Von:':
+        'From:',
+    'Zur Download-Seite':
+        'Go to download page',
+    '{0} davon sind mögliche Duplikate (gleicher Tag, gleicher Betrag).':
+        '{0} of them are possible duplicates (same day, same amount).',
+    'Der Kontoname darf nicht leer sein.':
+        'The account name must not be empty.',
+    'Das Standardkonto kann nicht gelöscht werden.':
+        'The default account cannot be deleted.',
+    'Das Konto hat noch Buchungen oder Umbuchungen und kann nicht gelöscht werden.':
+        'The account still has bookings or transfers and cannot be deleted.',
+    'Der Betrag einer Umbuchung muss größer als 0 sein.':
+        'The amount of a transfer must be greater than 0.',
+    'Quell- und Zielkonto müssen verschieden sein.':
+        'Source and target account must be different.',
+    'Konto nicht gefunden.':
+        'Account not found.',
 }

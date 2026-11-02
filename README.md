@@ -69,6 +69,16 @@ Datenbank-Logik teilen:
   7 Tage – sie verschwinden von selbst, sobald die Ursache erledigt ist
 - **Monatsabschluss**: Rückblick auf den Vormonat auf der Übersichtsseite (Gespart,
   Sparquote, Vergleich zum Vormonat, größte Ausgabe, eingehaltene Budgets), bis man ihn ausblendet
+- **Jahresabschluss**: Rückblick auf das Vorjahr (Gespart, Sparquote, Vergleich
+  mit dem Vorjahr, größte Ausgaben, teuerster und bester Sparmonat) – im Januar
+  bis März auf der Übersichtsseite, jederzeit unter Auswertungen
+- **Mehrere Konten** (Girokonto, Tagesgeld, Bargeld …) mit Startguthaben und
+  **Umbuchungen** dazwischen; Umbuchungen zählen nicht als Einnahme oder Ausgabe
+- **Ähnliche Buchungen erkennen**: Beim Anlegen warnt Plutos vor einer
+  Buchung mit gleichem Tag und Betrag; nach dem Inbox-Import zeigt eine
+  Hinweiskarte auf der Übersicht die neuen Buchungen samt möglicher Duplikate
+- **Update-Hinweis**: Beim Start wird (abschaltbar) geprüft, ob auf GitHub eine
+  neuere Version erschienen ist
 - **Modernes Design**: Seitenleiste mit Icons, eine **Übersichtsseite**
   (Gesamtvermögen, Monatssaldo, Notgroschen, Ausgabentempo, Budgets, Sparziele,
   Trend der letzten Monate, letzte Buchungen) sowie ein **helles und dunkles

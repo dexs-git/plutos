@@ -41,9 +41,12 @@ import cairo
 import datetime
 import re
 import math
+import threading
 
-from db import FinanceStore, add_months, DATA_DIR
+from db import FinanceStore, add_months, DATA_DIR, year_summary_lines
 import sync_tools
+import update_check
+from version import APP_VERSION
 import theme
 from theme import make_card, make_link_button, ProgressRow, PaceBar, MiniTrend, NavIcon
 from i18n import tr, set_language, get_language, LANGUAGES, months, months_short, weekdays, weekdays_short
@@ -200,6 +203,7 @@ class MainWindow(Gtk.Window):
 
         self.sync_cfg = sync_tools.SyncConfig(DATA_DIR / "sync.json")
         self._startup_messages = []
+        self._import_result = None       # letztes Inbox-Ergebnis (für die Hinweis-Karte)
         try:  # Sync/Inbox dürfen den Start nie verhindern
             self._sync_startup()
         except Exception as exc:
@@ -251,6 +255,7 @@ class MainWindow(Gtk.Window):
         self.connect("destroy", self._on_destroy)
         if self._startup_messages:
             GLib.timeout_add(400, self._show_startup_messages)
+        GLib.timeout_add(1500, self._start_update_check)
         
 
     # =====================================================================
@@ -367,6 +372,107 @@ class MainWindow(Gtk.Window):
             lay.pack_start(theme.make_label(text, "kpi-sub", wrap=True), False, False, 0)
         return card
 
+    def _notice_card(self, title, lines, buttons):
+        """Kleine Hinweis-Karte: Titel, Textzeilen, Link-Buttons rechts im Kopf."""
+        card, lay = make_card()
+        row = Gtk.Box()
+        row.pack_start(theme.make_label(title, "card-title"), True, True, 0)
+        for text, callback in reversed(buttons):
+            row.pack_end(make_link_button(text, callback), False, False, 0)
+        lay.pack_start(row, False, False, 0)
+        for text in lines:
+            lay.pack_start(theme.make_label(text, "kpi-sub", wrap=True), False, False, 0)
+        return card
+
+    def _import_notice_card(self, result):
+        lines = [tr('{0} Buchung(en) aus {1} Datei(en) importiert.').format(result["imported"], result["files"])]
+        if result.get("duplicates"):
+            lines.append(tr('{0} davon sind mögliche Duplikate (gleicher Tag, gleicher Betrag).').format(result["duplicates"]))
+        return self._notice_card(tr('Neu aus der Inbox'), lines, [
+            (tr('Anzeigen'), self._on_show_import_review),
+            (tr('Ausblenden'), self._dismiss_import_notice)])
+
+    def _on_show_import_review(self):
+        result = self._import_result
+        if not result:
+            return
+        dialog = ImportReviewDialog(self, self.store, result["ids"], result.get("duplicate_ids", []))
+        dialog.run()
+        deleted = dialog.deleted
+        dialog.destroy()
+        if deleted:
+            self._refresh_after_import_change()
+
+    def _refresh_after_import_change(self):
+        for name in ("_refresh_dashboard", "_refresh_day_list", "_refresh_budgets_tab",
+                     "_refresh_week_view", "_refresh_stats"):
+            fn = getattr(self, name, None)
+            if fn:
+                try:
+                    fn()
+                except Exception as exc:
+                    print(f"Aktualisieren fehlgeschlagen ({name}): {exc}")
+
+    def _dismiss_import_notice(self):
+        self._import_result = None
+        self._refresh_dashboard()
+
+    def _year_summary_card(self, ys):
+        t = theme.current()
+        card, lay = make_card()
+        row = Gtk.Box()
+        row.pack_start(theme.make_label(tr('Jahresabschluss {0}').format(ys["year"]), "card-title"), True, True, 0)
+        row.pack_end(make_link_button(tr('Ausblenden'), lambda: self._dismiss_year_summary(ys["year"])), False, False, 0)
+        row.pack_end(make_link_button(tr('Auswertungen'), lambda: self._open_year_summary(ys["year"])), False, False, 0)
+        lay.pack_start(row, False, False, 0)
+        head = theme.make_label("", "pace-amount")
+        head.set_markup(f'<span foreground="{t["positive"] if ys["saved"] >= 0 else t["negative"]}" size="x-large"><b>'
+                        f'{GLib.markup_escape_text(tr("Gespart {0}").format(fmt_amount(ys["saved"])))}</b></span>')
+        lay.pack_start(head, False, False, 0)
+        for text in year_summary_lines(ys, tr, fmt_amount, months()):
+            lay.pack_start(theme.make_label(text, "kpi-sub", wrap=True), False, False, 0)
+        return card
+
+    def _open_year_summary(self, year):
+        self.stats_month = datetime.date(year, 1, 1)
+        self._go_to("stats")
+        self.stats_view_combo.set_active_id("jahresabschluss")
+        self._refresh_stats()
+
+    def _dismiss_year_summary(self, year):
+        self.store.dismiss_year_summary(year)
+        self._refresh_dashboard()
+
+    # ----- Update-Hinweis -------------------------------------------------------
+    def _start_update_check(self):
+        if self.sync_cfg.check_updates:
+            def work():
+                found = update_check.check_for_update(APP_VERSION, self.sync_cfg.update_skipped)
+                if found:
+                    GLib.idle_add(self._on_update_found, found)
+            threading.Thread(target=work, daemon=True).start()
+        return False
+
+    def _on_update_found(self, found):
+        dialog = Gtk.MessageDialog(
+            transient_for=self, flags=0, message_type=Gtk.MessageType.INFO,
+            text=tr('Neue Version verfügbar'),
+            secondary_text=tr('Plutos {0} ist erschienen (installiert: {1}).').format(found["tag"].lstrip("v"), APP_VERSION))
+        dialog.add_button(tr('Später'), Gtk.ResponseType.CANCEL)
+        dialog.add_button(tr('Diese Version überspringen'), Gtk.ResponseType.REJECT)
+        dialog.add_button(tr('Zur Download-Seite'), Gtk.ResponseType.ACCEPT)
+        response = dialog.run()
+        dialog.destroy()
+        if response == Gtk.ResponseType.ACCEPT:
+            try:
+                Gtk.show_uri_on_window(self, found["url"], Gdk.CURRENT_TIME)
+            except Exception as exc:
+                print(f"Link öffnen fehlgeschlagen: {exc}")
+        elif response == Gtk.ResponseType.REJECT:
+            self.sync_cfg.update_skipped = found["tag"]
+            self.sync_cfg.save()
+        return False
+
     def _dismiss_month_summary(self, month):
         self.store.dismiss_month_summary(month)
         self._refresh_dashboard()
@@ -482,20 +588,32 @@ class MainWindow(Gtk.Window):
         if reminders:
             grid.attach(self._reminders_card(reminders), 0, 1, 6, 1)
 
-        # --- Monatsabschluss (Vormonat, bis er ausgeblendet wird) -----------
+        # --- Hinweise: Inbox-Import, Jahres- und Monatsabschluss -------------
+        extras = []
+        if self._import_result:
+            extras.append(self._import_notice_card(self._import_result))
+        year_summary = self.store.pending_year_summary()
+        if year_summary:
+            extras.append(self._year_summary_card(year_summary))
         summary = self.store.pending_month_summary()
         if summary:
-            grid.attach(self._month_summary_card(summary), 0, 2, 6, 1)
+            extras.append(self._month_summary_card(summary))
+        if extras:
+            wrapper = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+            for card in extras:
+                wrapper.pack_start(card, False, False, 0)
+            grid.attach(wrapper, 0, 2, 6, 1)
 
         # --- Kennzahlen ---------------------------------------------------
         bd = d["balance"]
         if bd is None:
             card1, _ = self._kpi_card(tr('Kontostand'), "–",
                                       tr('Kontostand in der Finanzplanung hinterlegen'))
-        elif d["pocket_enabled"]:
-            card1, _ = self._kpi_card(
-                tr('Gesamtvermögen'), fmt_amount(bd["total"]),
-                tr('Girokonto {0} · Notgroschen {1}').format(fmt_amount(bd["giro"]), fmt_amount(bd["pocket"])))
+        elif d["pocket_enabled"] or len(bd["accounts"]) > 1:
+            parts = [f"{a['name']} {fmt_amount(a['balance'])}" for a in bd["accounts"] if a["balance"] is not None]
+            if d["pocket_enabled"]:
+                parts.append(f"{tr('Notgroschen')} {fmt_amount(bd['pocket'])}")
+            card1, _ = self._kpi_card(tr('Gesamtvermögen'), fmt_amount(bd["total"]), " · ".join(parts))
         else:
             card1, _ = self._kpi_card(tr('Kontostand'), fmt_amount(bd["giro"]), tr('Berechnet bis heute'))
         grid.attach(card1, 0, 3, 2, 1)
@@ -2768,9 +2886,22 @@ class MainWindow(Gtk.Window):
         )
 
         saved = None
-        if dialog.run() == Gtk.ResponseType.OK:
+        while dialog.run() == Gtk.ResponseType.OK:
+            similar = dialog.find_similar()
+            if similar:
+                first = similar[0]
+                answer = _run_message_dialog(
+                    dialog, Gtk.MessageType.QUESTION, Gtk.ButtonsType.YES_NO,
+                    tr('Mögliches Duplikat'),
+                    tr('Am {0} gibt es schon eine Buchung über {1} ({2}).\n\nTrotzdem speichern?').format(
+                        datetime.date.fromisoformat(first["date"]).strftime("%d.%m.%Y"),
+                        fmt_amount(abs(first["amount"])),
+                        (first["description"] or first["category_name"]).strip()))
+                if answer != Gtk.ResponseType.YES:
+                    continue     # Dialog mit den eingegebenen Werten erneut zeigen
             dialog.save()
             saved = dialog.last_saved
+            break
 
         dialog.destroy()
 
@@ -3294,6 +3425,10 @@ class MainWindow(Gtk.Window):
         apply_balance_btn.connect("clicked", self._on_apply_balance_to_recommendation)
         balance_grid.attach(apply_balance_btn, 0, 4, 3, 1)
 
+        accounts_btn = Gtk.Button(label=tr('Konten verwalten…'))
+        accounts_btn.connect("clicked", self._on_manage_accounts)
+        balance_grid.attach(accounts_btn, 0, 7, 3, 1)
+
         balance_hint = Gtk.Label(
             xalign=0,
             label=tr('Praktisch, wenn du gerade erst anfängst, für etwas zu sparen, einen Notgroschen aufzubauen oder in ETFs zu investieren: so zählt dein tatsächlich vorhandenes Geld, nicht nur das, was du seit Nutzung von Plutos gebucht hast.'),
@@ -3498,23 +3633,33 @@ class MainWindow(Gtk.Window):
             )
         else:
             bd = self.store.get_balance_breakdown()
-            if bd and self.store.notgroschen_pocket_enabled():
-                self.current_balance_label.set_markup(
-                    tr('Girokonto: <b>{0}</b>\nNotgroschen-Unterkonto: <b>{1}</b>\nGesamt: <b>{2}</b>').format(fmt_amount(bd['giro']), fmt_amount(bd['pocket']), fmt_amount(bd['total']))
-                )
+            if bd and (self.store.notgroschen_pocket_enabled() or len(bd["accounts"]) > 1):
+                lines = [f"{GLib.markup_escape_text(a['name'])}: <b>{fmt_amount(a['balance'])}</b>"
+                         for a in bd["accounts"]]
+                if self.store.notgroschen_pocket_enabled():
+                    lines.append(tr('Notgroschen-Unterkonto: <b>{0}</b>').format(fmt_amount(bd['pocket'])))
+                lines.append(tr('Gesamt: <b>{0}</b>').format(fmt_amount(bd['total'])))
+                self.current_balance_label.set_markup("\n".join(lines))
             else:
                 self.current_balance_label.set_markup(
                     tr('Aktueller Kontostand (berechnet): <b>{0}</b>').format(fmt_amount(balance))
                 )
+
+    def _on_manage_accounts(self, widget):
+        dialog = AccountsDialog(self, self.store)
+        dialog.run()
+        dialog.destroy()
+        self._refresh_current_balance_display()
+        self._refresh_dashboard()
 
     def _on_toggle_pocket(self, widget):
         self.store.set_notgroschen_pocket(widget.get_active())
         self._refresh_current_balance_display()
 
     def _on_apply_balance_to_recommendation(self, widget):
-        balance = self.store.get_current_account_balance()
-        if balance is not None:
-            self.planning_capital_spin.set_value(max(0.0, balance))
+        bd = self.store.get_balance_breakdown()
+        if bd is not None:
+            self.planning_capital_spin.set_value(max(0.0, bd["total"] - bd["pocket"]))
 
     def _on_recalc_fixed_costs(self, widget):
         self.planning_fixed_costs_spin.set_value(self.store.estimate_monthly_fixed_costs())
@@ -4178,6 +4323,7 @@ class MainWindow(Gtk.Window):
         self.stats_view_combo.append("jahresvergleich", tr('Jahresübersicht (mit Vorjahr)'))
         self.stats_view_combo.append("budgetjahr", tr('Budgets im Jahr'))
         self.stats_view_combo.append("tags", tr('Tags'))
+        self.stats_view_combo.append("jahresabschluss", tr('Jahresabschluss'))
         self.stats_view_combo.set_active_id("kategorien")
         self.stats_view_combo.connect("changed", self._on_stats_view_changed)
         switcher_box.pack_start(self.stats_view_combo, False, False, 0)
@@ -4193,6 +4339,7 @@ class MainWindow(Gtk.Window):
         self.stats_stack.add_named(self._build_year_compare_section(), "jahresvergleich")
         self.stats_stack.add_named(self._build_budget_year_section(), "budgetjahr")
         self.stats_stack.add_named(self._build_tags_section(), "tags")
+        self.stats_stack.add_named(self._build_year_summary_section(), "jahresabschluss")
 
         self._refresh_stats()
         return root
@@ -4604,6 +4751,31 @@ class MainWindow(Gtk.Window):
         label.set_margin_bottom(4)
         return label
 
+    def _build_year_summary_section(self):
+        section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self._year_nav(section, "yearsummary_label")
+        self.yearsummary_head = Gtk.Label(xalign=0)
+        section.pack_start(self.yearsummary_head, False, False, 0)
+        self.yearsummary_body = theme.make_label("", "kpi-sub", wrap=True)
+        section.pack_start(self.yearsummary_body, False, False, 0)
+        return section
+
+    def _refresh_year_summary_view(self):
+        if not hasattr(self, "yearsummary_body"):
+            return
+        year = self.stats_month.year
+        self.yearsummary_label.set_text(tr('Jahresabschluss {0}').format(year))
+        ys = self.store.year_summary(year)
+        t = theme.current()
+        if not ys["count"]:
+            self.yearsummary_head.set_text("")
+            self.yearsummary_body.set_text(tr('Für {0} gibt es keine Buchungen.').format(year))
+            return
+        self.yearsummary_head.set_markup(
+            f'<span foreground="{t["positive"] if ys["saved"] >= 0 else t["negative"]}" size="x-large"><b>'
+            f'{GLib.markup_escape_text(tr("Gespart {0}").format(fmt_amount(ys["saved"])))}</b></span>')
+        self.yearsummary_body.set_text("\n\n".join(year_summary_lines(ys, tr, fmt_amount, months())))
+
     def _build_budget_year_section(self):
         section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         self._year_nav(section, "budgetyear_label")
@@ -4872,6 +5044,7 @@ class MainWindow(Gtk.Window):
         self._refresh_compare(month_str)
         self._refresh_year_compare()
         self._refresh_budget_year()
+        self._refresh_year_summary_view()
         self._refresh_tags()
 
     def _draw_text(self, cr, text, x, y, color, size=12, bold=False):
@@ -5692,6 +5865,14 @@ class MainWindow(Gtk.Window):
         grid.attach(self.theme_combo, 1, 1, 1, 1)
         box.pack_start(grid, False, False, 0)
 
+        box = section(tr('Updates'))
+        text(box, tr('Installierte Version: {0}').format(APP_VERSION))
+        self.update_check_box = Gtk.CheckButton(
+            label=tr('Beim Start nach einer neuen Version suchen (fragt nur GitHub ab, sendet keine Daten)'))
+        self.update_check_box.set_active(self.sync_cfg.check_updates)
+        self.update_check_box.connect("toggled", self._on_toggle_update_check)
+        box.pack_start(self.update_check_box, False, False, 0)
+
         self.export_status_label = Gtk.Label(label="", xalign=0.0)
         self.export_status_label.set_line_wrap(True)
         self.export_status_label.set_max_width_chars(10)
@@ -5752,6 +5933,8 @@ class MainWindow(Gtk.Window):
         except Exception as exc:
             print(f"Aufräumen der Inbox fehlgeschlagen: {exc}")
         result = sync_tools.import_inbox(self.store, inbox)
+        if result["imported"]:
+            self._import_result = result
         lines = sync_tools.describe_inbox_result(result, tr)
         if startup:
             self._startup_messages.extend(lines)
@@ -5768,6 +5951,10 @@ class MainWindow(Gtk.Window):
             entry.set_text(dialog.get_filename())
             self._save_sync_settings()
         dialog.destroy()
+
+    def _on_toggle_update_check(self, widget):
+        self.sync_cfg.check_updates = widget.get_active()
+        self.sync_cfg.save()
 
     def _save_sync_settings(self, *_args):
         cfg = self.sync_cfg
@@ -6028,10 +6215,25 @@ class TransactionDialog(FormDialog):
         self.tags_entry.set_placeholder_text(tr('z. B. Urlaub, Geschenk (mit Komma trennen)'))
         grid.attach(self.tags_entry, 1, 5, 1, 1)
 
+        self.accounts = store.list_accounts()
+        self.account_label = Gtk.Label(label=tr('Konto:'), xalign=0)
+        grid.attach(self.account_label, 0, 6, 1, 1)
+        self.account_combo = Gtk.ComboBoxText()
+        current_account = (existing["account_id"] if existing and existing["account_id"] is not None
+                           else store.default_account_id())
+        for acc in self.accounts:
+            self.account_combo.append(str(acc["id"]), f"{acc['icon']} {acc['name']}")
+        self.account_combo.set_active_id(str(current_account))
+        grid.attach(self.account_combo, 1, 6, 1, 1)
+        if len(self.accounts) < 2:      # ohne weitere Konten keine Auswahl anzeigen
+            for w in (self.account_label, self.account_combo):
+                w.set_no_show_all(True)
+                w.hide()
+
         if not existing:
             self.recurring_check = Gtk.CheckButton(label=tr('Wiederkehrende Buchung'))
             self.recurring_check.connect("toggled", self._on_recurring_toggled)
-            grid.attach(self.recurring_check, 0, 6, 2, 1)
+            grid.attach(self.recurring_check, 0, 7, 2, 1)
 
             self.frequency_combo = Gtk.ComboBoxText()
             self.frequency_combo.append("woechentlich", tr('Wöchentlich'))
@@ -6039,7 +6241,7 @@ class TransactionDialog(FormDialog):
             self.frequency_combo.append("jaehrlich", tr('Jährlich'))
             self.frequency_combo.set_active_id("monatlich")
             self.frequency_combo.set_sensitive(False)
-            grid.attach(self.frequency_combo, 0, 7, 2, 1)
+            grid.attach(self.frequency_combo, 0, 8, 2, 1)
         else:
             self.recurring_check = None
             if existing["recurring_template_id"] is not None:
@@ -6048,9 +6250,24 @@ class TransactionDialog(FormDialog):
                     label=tr('Diese Buchung stammt aus einer wiederkehrenden Vorlage. Änderungen betreffen nur diese einzelne Buchung.'),
                 )
                 note.set_line_wrap(True)
-                grid.attach(note, 0, 6, 2, 1)
+                grid.attach(note, 0, 7, 2, 1)
 
         self.show_all()
+
+    def find_similar(self):
+        """Bereits vorhandene Buchungen am selben Tag mit demselben Betrag (mögliche
+        Duplikate) – nur beim Anlegen einer einzelnen, nicht wiederkehrenden Buchung."""
+        if self.existing or (self.recurring_check is not None and self.recurring_check.get_active()):
+            return []
+        raw = self.amount_spin.get_value()
+        if raw <= 0:
+            return []
+        try:
+            date_obj = datetime.datetime.strptime(self.date_entry.get_text().strip(), "%d.%m.%Y").date()
+        except ValueError:
+            date_obj = datetime.date.today()
+        amount = raw if self.kind_combo.get_active_id() == "einnahme" else -raw
+        return self.store.similar_transactions(date_obj.isoformat(), amount)
 
     def _reload_categories(self, preselect=None):
         kind = self.kind_combo.get_active_id()
@@ -6086,7 +6303,8 @@ class TransactionDialog(FormDialog):
         if self.existing:
             self.store.update_transaction(
                 self.existing["id"], date_obj.isoformat(), amount, category_id, description,
-                tags=self.tags_entry.get_text()
+                tags=self.tags_entry.get_text(),
+                account_id=int(self.account_combo.get_active_id())
             )
         elif self.recurring_check is not None and self.recurring_check.get_active():
             frequency = self.frequency_combo.get_active_id()
@@ -6097,7 +6315,8 @@ class TransactionDialog(FormDialog):
         else:
             self.store.add_transaction(
                 date_obj.isoformat(), amount, category_id, description,
-                tags=self.tags_entry.get_text()
+                tags=self.tags_entry.get_text(),
+                account_id=int(self.account_combo.get_active_id())
             )
 
 
@@ -6724,6 +6943,310 @@ class QuickTemplatesDialog(Gtk.Dialog):
         if template_id is not None:
             self.store.delete_quick_template(template_id)
             self._reload()
+
+
+# ---------------------------------------------------------------------------
+# Konten & Umbuchungen
+# ---------------------------------------------------------------------------
+
+def _parse_date_entry(text):
+    try:
+        return datetime.datetime.strptime(text.strip(), "%d.%m.%Y").date()
+    except ValueError:
+        return datetime.date.today()
+
+
+class AccountEditDialog(FormDialog):
+    """Konto anlegen oder bearbeiten. Das Standardkonto nutzt das Startguthaben
+    aus der Finanzplanung, hier lässt sich nur Name und Symbol ändern."""
+
+    def __init__(self, parent, account=None):
+        super().__init__(parent, tr('Konto bearbeiten') if account else tr('Konto hinzufügen'))
+        self.set_default_size(380, 260)
+        self.account = account
+        self.is_default = bool(account and account["is_default"])
+        grid = self.grid
+        grid.attach(Gtk.Label(label=tr('Icon:'), xalign=0), 0, 0, 1, 1)
+        self.icon_entry = Gtk.Entry(text=account["icon"] if account else "🏦")
+        self.icon_entry.set_max_length(4)
+        self.icon_entry.set_width_chars(4)
+        self.icon_entry.set_hexpand(False)
+        grid.attach(self.icon_entry, 1, 0, 1, 1)
+        picker = Gtk.Box(spacing=2)
+        for emoji in ["🏦", "💰", "👛", "💳", "🐷", "📈", "🏠", "🎯"]:
+            btn = Gtk.Button(label=emoji, relief=Gtk.ReliefStyle.NONE)
+            btn.connect("clicked", lambda w, e=emoji: self.icon_entry.set_text(e))
+            picker.pack_start(btn, False, False, 0)
+        grid.attach(picker, 1, 1, 1, 1)
+        grid.attach(Gtk.Label(label=tr('Name:'), xalign=0), 0, 2, 1, 1)
+        self.name_entry = Gtk.Entry(text=account["name"] if account else "")
+        self.name_entry.set_hexpand(True)
+        grid.attach(self.name_entry, 1, 2, 1, 1)
+        self.amount_spin = Gtk.SpinButton(
+            adjustment=Gtk.Adjustment(value=float(account["opening_amount"]) if account and not self.is_default else 0.0,
+                                      lower=-1000000, upper=10000000, step_increment=10, page_increment=100),
+            numeric=True, digits=2)
+        iso = (account["opening_date"] if account and account["opening_date"]
+               else datetime.date.today().isoformat())
+        self.date_entry = Gtk.Entry(text=datetime.date.fromisoformat(iso).strftime("%d.%m.%Y"))
+        if self.is_default:
+            note = Gtk.Label(label=tr('Startguthaben und Stichtag des Standardkontos stehen in der Finanzplanung.'), xalign=0)
+            note.set_line_wrap(True)
+            note.set_max_width_chars(36)
+            grid.attach(note, 0, 3, 2, 1)
+        else:
+            grid.attach(Gtk.Label(label=tr('Guthaben am Stichtag (€):'), xalign=0), 0, 3, 1, 1)
+            grid.attach(self.amount_spin, 1, 3, 1, 1)
+            grid.attach(Gtk.Label(label=tr('Stichtag (TT.MM.JJJJ):'), xalign=0), 0, 4, 1, 1)
+            grid.attach(self.date_entry, 1, 4, 1, 1)
+        self.show_all()
+
+    def get_data(self):
+        name = self.name_entry.get_text().strip()
+        if not name:
+            return None
+        return {"name": name, "icon": self.icon_entry.get_text().strip() or "🏦",
+                "opening_amount": self.amount_spin.get_value(),
+                "opening_date": _parse_date_entry(self.date_entry.get_text()).isoformat()}
+
+
+class TransferDialog(FormDialog):
+    """Umbuchung zwischen zwei Konten (zählt nicht als Einnahme/Ausgabe)."""
+
+    def __init__(self, parent, store: FinanceStore, default_date=None):
+        super().__init__(parent, tr('Umbuchung'))
+        self.set_default_size(380, 260)
+        accounts = store.list_accounts()
+        grid = self.grid
+        grid.attach(Gtk.Label(label=tr('Von:'), xalign=0), 0, 0, 1, 1)
+        self.from_combo = Gtk.ComboBoxText()
+        grid.attach(self.from_combo, 1, 0, 1, 1)
+        grid.attach(Gtk.Label(label=tr('Nach:'), xalign=0), 0, 1, 1, 1)
+        self.to_combo = Gtk.ComboBoxText()
+        grid.attach(self.to_combo, 1, 1, 1, 1)
+        for acc in accounts:
+            for combo in (self.from_combo, self.to_combo):
+                combo.append(str(acc["id"]), f"{acc['icon']} {acc['name']}")
+        self.from_combo.set_active(0)
+        self.to_combo.set_active(1 if len(accounts) > 1 else 0)
+        grid.attach(Gtk.Label(label=tr('Betrag (€):'), xalign=0), 0, 2, 1, 1)
+        self.amount_spin = Gtk.SpinButton(
+            adjustment=Gtk.Adjustment(value=0, lower=0, upper=1000000, step_increment=10, page_increment=100),
+            numeric=True, digits=2)
+        grid.attach(self.amount_spin, 1, 2, 1, 1)
+        grid.attach(Gtk.Label(label=tr('Datum (TT.MM.JJJJ):'), xalign=0), 0, 3, 1, 1)
+        d = default_date or datetime.date.today()
+        self.date_entry = Gtk.Entry(text=d.strftime("%d.%m.%Y"))
+        grid.attach(self.date_entry, 1, 3, 1, 1)
+        grid.attach(Gtk.Label(label=tr('Beschreibung:'), xalign=0), 0, 4, 1, 1)
+        self.description_entry = Gtk.Entry()
+        self.description_entry.set_hexpand(True)
+        grid.attach(self.description_entry, 1, 4, 1, 1)
+        self.show_all()
+
+    def get_data(self):
+        return (_parse_date_entry(self.date_entry.get_text()).isoformat(), self.amount_spin.get_value(),
+                int(self.from_combo.get_active_id()), int(self.to_combo.get_active_id()),
+                self.description_entry.get_text().strip())
+
+
+class AccountsDialog(Gtk.Dialog):
+    """Konten verwalten und Umbuchungen erfassen."""
+
+    def __init__(self, parent, store: FinanceStore):
+        super().__init__(title=tr('Konten verwalten'), transient_for=parent, flags=0)
+        self.add_buttons(Gtk.STOCK_CLOSE, Gtk.ResponseType.CLOSE)
+        self.set_default_size(560, 520)
+        self.store = store
+        area = self.get_content_area()
+        area.set_border_width(10)
+        area.set_spacing(6)
+
+        area.pack_start(Gtk.Label(label=tr('Konten'), xalign=0), False, False, 0)
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_shadow_type(Gtk.ShadowType.IN)
+        area.pack_start(scroller, True, True, 0)
+        self.account_store = Gtk.ListStore(int, str, str, str)   # id, icon, name, saldo
+        self.account_view = Gtk.TreeView(model=self.account_store)
+        scroller.add(self.account_view)
+        for i, title in enumerate((tr('Icon'), tr('Name'), tr('Saldo')), start=1):
+            renderer = Gtk.CellRendererText()
+            if i == 3:
+                renderer.set_property("xalign", 1.0)
+            col = Gtk.TreeViewColumn(title, renderer, text=i)
+            col.set_expand(i == 2)
+            self.account_view.append_column(col)
+
+        row = Gtk.Box(spacing=6)
+        for label, handler in ((tr('Hinzufügen'), self._on_add), (tr('Bearbeiten'), self._on_edit),
+                               (tr('Löschen'), self._on_delete), (tr('Umbuchung…'), self._on_transfer)):
+            btn = Gtk.Button(label=label)
+            btn.connect("clicked", handler)
+            row.pack_start(btn, False, False, 0)
+        area.pack_start(row, False, False, 0)
+
+        area.pack_start(Gtk.Label(label=tr('Letzte Umbuchungen'), xalign=0), False, False, 0)
+        scroller2 = Gtk.ScrolledWindow()
+        scroller2.set_shadow_type(Gtk.ShadowType.IN)
+        area.pack_start(scroller2, True, True, 0)
+        self.transfer_store = Gtk.ListStore(int, str, str, str, str)  # id, datum, von→nach, betrag, text
+        self.transfer_view = Gtk.TreeView(model=self.transfer_store)
+        scroller2.add(self.transfer_view)
+        for i, title in enumerate((tr('Datum'), tr('Von → Nach'), tr('Betrag'), tr('Beschreibung')), start=1):
+            renderer = Gtk.CellRendererText()
+            if i == 3:
+                renderer.set_property("xalign", 1.0)
+            col = Gtk.TreeViewColumn(title, renderer, text=i)
+            col.set_expand(i == 4)
+            self.transfer_view.append_column(col)
+        del_transfer = Gtk.Button(label=tr('Umbuchung löschen'))
+        del_transfer.set_halign(Gtk.Align.START)
+        del_transfer.connect("clicked", self._on_delete_transfer)
+        area.pack_start(del_transfer, False, False, 0)
+        self._refresh()
+        self.show_all()
+
+    def _refresh(self):
+        self.account_store.clear()
+        for acc in self.store.list_accounts():
+            bal = self.store.get_account_balance(acc["id"])
+            name = acc["name"] + (" " + tr('(Standard)') if acc["is_default"] else "")
+            self.account_store.append([acc["id"], acc["icon"], name, fmt_amount(bal) if bal is not None else "–"])
+        self.transfer_store.clear()
+        for t in self.store.list_transfers(limit=50):
+            self.transfer_store.append([
+                t["id"], datetime.date.fromisoformat(t["date"]).strftime("%d.%m.%Y"),
+                f"{t['from_icon']} {t['from_name']} → {t['to_icon']} {t['to_name']}",
+                fmt_amount(t["amount"]), t["description"] or ""])
+
+    def _selected_id(self, view):
+        model, tree_iter = view.get_selection().get_selected()
+        return model.get_value(tree_iter, 0) if tree_iter is not None else None
+
+    def _error(self, exc):
+        _run_message_dialog(self, Gtk.MessageType.WARNING, Gtk.ButtonsType.OK, tr('Konten verwalten'), tr(str(exc)))
+
+    def _on_add(self, widget):
+        dialog = AccountEditDialog(self)
+        if dialog.run() == Gtk.ResponseType.OK:
+            data = dialog.get_data()
+            if data:
+                try:
+                    self.store.add_account(data["name"], data["icon"], data["opening_amount"], data["opening_date"])
+                except ValueError as exc:
+                    self._error(exc)
+        dialog.destroy()
+        self._refresh()
+
+    def _on_edit(self, widget):
+        acc_id = self._selected_id(self.account_view)
+        if acc_id is None:
+            return
+        dialog = AccountEditDialog(self, self.store.get_account(acc_id))
+        if dialog.run() == Gtk.ResponseType.OK:
+            data = dialog.get_data()
+            if data:
+                try:
+                    self.store.update_account(acc_id, data["name"], data["icon"],
+                                              data["opening_amount"], data["opening_date"])
+                except ValueError as exc:
+                    self._error(exc)
+        dialog.destroy()
+        self._refresh()
+
+    def _on_delete(self, widget):
+        acc_id = self._selected_id(self.account_view)
+        if acc_id is None:
+            return
+        try:
+            self.store.delete_account(acc_id)
+        except ValueError as exc:
+            self._error(exc)
+        self._refresh()
+
+    def _on_transfer(self, widget):
+        if len(self.store.list_accounts()) < 2:
+            _run_message_dialog(self, Gtk.MessageType.INFO, Gtk.ButtonsType.OK, tr('Umbuchung'),
+                                tr('Für eine Umbuchung brauchst du mindestens zwei Konten.'))
+            return
+        dialog = TransferDialog(self, self.store)
+        if dialog.run() == Gtk.ResponseType.OK:
+            try:
+                self.store.add_transfer(*dialog.get_data())
+            except ValueError as exc:
+                self._error(exc)
+        dialog.destroy()
+        self._refresh()
+
+    def _on_delete_transfer(self, widget):
+        t_id = self._selected_id(self.transfer_view)
+        if t_id is not None:
+            self.store.delete_transfer(t_id)
+            self._refresh()
+
+
+class ImportReviewDialog(Gtk.Dialog):
+    """Zeigt die zuletzt aus der Inbox importierten Buchungen; mögliche Duplikate
+    sind markiert und lassen sich hier direkt löschen."""
+
+    def __init__(self, parent, store: FinanceStore, ids, duplicate_ids):
+        super().__init__(title=tr('Importierte Buchungen'), transient_for=parent, flags=0)
+        self.add_buttons(Gtk.STOCK_CLOSE, Gtk.ResponseType.CLOSE)
+        self.set_default_size(640, 420)
+        self.store = store
+        self.ids = list(ids)
+        self.duplicate_ids = set(duplicate_ids)
+        self.deleted = 0
+        area = self.get_content_area()
+        area.set_border_width(10)
+        area.set_spacing(6)
+        hint = Gtk.Label(label=tr('Markierte Zeilen haben am selben Tag einen anderen Eintrag mit demselben Betrag – mögliche Duplikate. Wähle Buchungen aus und lösche sie, wenn sie doppelt sind.'), xalign=0)
+        hint.set_line_wrap(True)
+        hint.set_max_width_chars(60)
+        area.pack_start(hint, False, False, 0)
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_shadow_type(Gtk.ShadowType.IN)
+        area.pack_start(scroller, True, True, 0)
+        self.list_store = Gtk.ListStore(int, str, str, str, str, str)  # id, datum, kategorie, text, betrag, hinweis
+        self.view = Gtk.TreeView(model=self.list_store)
+        self.view.get_selection().set_mode(Gtk.SelectionMode.MULTIPLE)
+        scroller.add(self.view)
+        for i, title in enumerate((tr('Datum'), tr('Kategorie'), tr('Beschreibung'), tr('Betrag'), tr('Hinweis')), start=1):
+            renderer = Gtk.CellRendererText()
+            if i == 4:
+                renderer.set_property("xalign", 1.0)
+            col = Gtk.TreeViewColumn(title, renderer, text=i)
+            col.set_expand(i == 3)
+            self.view.append_column(col)
+        delete = Gtk.Button(label=tr('Ausgewählte löschen'))
+        delete.set_halign(Gtk.Align.START)
+        delete.connect("clicked", self._on_delete)
+        area.pack_start(delete, False, False, 0)
+        self._refresh()
+        self.show_all()
+
+    def _refresh(self):
+        self.list_store.clear()
+        cats = {c["id"]: c for c in self.store.list_categories()}
+        for tx_id in self.ids:
+            t = self.store.get_transaction(tx_id)
+            if t is None:
+                continue
+            cat = cats.get(t["category_id"])
+            self.list_store.append([
+                t["id"], datetime.date.fromisoformat(t["date"]).strftime("%d.%m.%Y"),
+                f"{cat['icon']} {cat['name']}" if cat else "", t["description"] or "",
+                fmt_amount(t["amount"]),
+                tr('Mögliches Duplikat') if t["id"] in self.duplicate_ids else ""])
+
+    def _on_delete(self, widget):
+        model, paths = self.view.get_selection().get_selected_rows()
+        ids = [model[p][0] for p in paths]
+        for tx_id in ids:
+            self.store.delete_transaction(tx_id)
+            self.deleted += 1
+        self.ids = [i for i in self.ids if i not in ids]
+        self._refresh()
 
 
 def main():

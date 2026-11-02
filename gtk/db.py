@@ -70,9 +70,47 @@ def _days_in_month(year: int, month: int) -> int:
     return (next_month - datetime.timedelta(days=1)).day
 
 
+KEEP = object()  # "unverändert lassen" bei update_*-Methoden
+
+
 def _month_pattern(month):
     """SQL-LIKE-Pattern für alle Tage eines Monats (Format YYYY-MM -> 'YYYY-MM-%')."""
     return f"{month}-%"
+
+
+
+def year_summary_lines(ys, tr, fmt, month_names):
+    """Textzeilen zu einem year_summary()-Ergebnis (für Übersicht und Auswertungen).
+    tr = Übersetzungsfunktion, fmt = Betragsformatierung, month_names = Monatsnamen."""
+    lines = []
+    first = tr('Einnahmen {0} · Ausgaben {1}').format(fmt(ys["income"]), fmt(ys["expense"]))
+    if ys["saving_rate"] is not None:
+        first += " · " + tr('Sparquote {0:.0f} %').format(ys["saving_rate"] * 100)
+    lines.append(first)
+    if ys["expense_change"] is not None:
+        ch = ys["expense_change"] * 100
+        text = tr('Ausgaben {0}{1:.0f} % gegenüber {2}').format("+" if ch > 0 else "−", abs(ch), ys["year"] - 1)
+        if ys["prev_saved"] is not None:
+            text += " · " + tr('Gespart {0} (Vorjahr {1})').format(fmt(ys["saved"]), fmt(ys["prev_saved"]))
+        lines.append(text)
+    if ys["avg_monthly_expense"]:
+        lines.append(tr('Durchschnittliche Ausgaben pro Monat: {0}').format(fmt(ys["avg_monthly_expense"])))
+    if ys["top_categories"]:
+        lines.append(tr('Größte Ausgaben: {0}').format(", ".join(
+            f"{c['icon']} {c['name']} ({fmt(c['amount'])}, {c['share'] * 100:.0f} %)"
+            for c in ys["top_categories"])))
+    parts = []
+    if ys["most_expensive_month"]:
+        m = ys["most_expensive_month"]
+        parts.append(tr('Teuerster Monat: {0} ({1})').format(month_names[m["month"] - 1], fmt(m["expense"])))
+    if ys["best_month"]:
+        m = ys["best_month"]
+        parts.append(tr('Bester Sparmonat: {0} ({1})').format(month_names[m["month"] - 1], fmt(m["saved"])))
+    if parts:
+        lines.append(" · ".join(parts))
+    if ys["to_goals"] > 0.005:
+        lines.append(tr('In Sparziele eingezahlt: {0}').format(fmt(ys["to_goals"])))
+    return lines
 
 
 class FinanceStore:
@@ -210,6 +248,7 @@ class FinanceStore:
             for index, row in enumerate(ordered):
                 c.execute("UPDATE savings_goals SET priority = ? WHERE id = ?", (index, row["id"]))
         c.commit()
+        self._ensure_account_tables()
 
     def _ensure_default_categories(self):
         defaults = [
@@ -292,19 +331,28 @@ class FinanceStore:
         return [t for t in (tags or "").split(",") if t]
 
     def add_transaction(self, date, amount, category_id, description,
-                         recurring_template_id=None, tags=""):
+                         recurring_template_id=None, tags="", account_id=None):
+        """account_id=None (oder das Standardkonto) = Standardkonto."""
+        if account_id is not None and account_id == self.default_account_id():
+            account_id = None
         cur = self.conn.execute(
             "INSERT INTO transactions (date, amount, category_id, description, "
-            "recurring_template_id, tags) VALUES (?, ?, ?, ?, ?, ?)",
+            "recurring_template_id, tags, account_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (date, amount, category_id, description, recurring_template_id,
-             self.normalize_tags(tags)),
+             self.normalize_tags(tags), account_id),
         )
         self.conn.commit()
         return cur.lastrowid
 
     def update_transaction(self, transaction_id, date, amount, category_id, description,
-                            tags=None):
-        """tags=None lässt die vorhandenen Tags unverändert."""
+                            tags=None, account_id=KEEP):
+        """tags=None lässt die vorhandenen Tags unverändert; account_id=KEEP
+        (Standard) das Konto. account_id=None setzt das Standardkonto."""
+        if account_id is not KEEP:
+            if account_id is not None and account_id == self.default_account_id():
+                account_id = None
+            self.conn.execute("UPDATE transactions SET account_id = ? WHERE id = ?",
+                              (account_id, transaction_id))
         if tags is None:
             self.conn.execute(
                 "UPDATE transactions SET date = ?, amount = ?, category_id = ?, description = ? "
@@ -398,7 +446,7 @@ class FinanceStore:
         """month im Format YYYY-MM, oder None für alle Buchungen."""
         pattern = _month_pattern(month) if month else "%"
         cur = self.conn.execute("""
-            SELECT t.id, t.date, t.amount, t.description, t.recurring_template_id, t.tags,
+            SELECT t.id, t.date, t.amount, t.description, t.recurring_template_id, t.tags, t.account_id,
                    c.id AS category_id, c.name AS category_name, c.kind, c.icon
             FROM transactions t JOIN categories c ON t.category_id = c.id
             WHERE t.date LIKE ?
@@ -455,7 +503,7 @@ class FinanceStore:
             where.append("ABS(t.amount) <= ?")
             params.append(max_amount + 0.005)
         sql = """
-            SELECT t.id, t.date, t.amount, t.description, t.recurring_template_id, t.tags,
+            SELECT t.id, t.date, t.amount, t.description, t.recurring_template_id, t.tags, t.account_id,
                    c.id AS category_id, c.name AS category_name, c.kind, c.icon
             FROM transactions t JOIN categories c ON t.category_id = c.id
         """
@@ -467,7 +515,7 @@ class FinanceStore:
 
     def list_transactions_for_day(self, date):
         cur = self.conn.execute("""
-            SELECT t.id, t.date, t.amount, t.description, t.recurring_template_id, t.tags,
+            SELECT t.id, t.date, t.amount, t.description, t.recurring_template_id, t.tags, t.account_id,
                    c.id AS category_id, c.name AS category_name, c.kind, c.icon
             FROM transactions t JOIN categories c ON t.category_id = c.id
             WHERE t.date = ?
@@ -1473,12 +1521,191 @@ class FinanceStore:
             return None
         if as_of_date is None:
             as_of_date = datetime.date.today().isoformat()
-        row = self.conn.execute(
-            "SELECT COALESCE(SUM(amount), 0) AS total FROM transactions "
-            "WHERE date >= ? AND date <= ?",
-            (reference_date, as_of_date),
-        ).fetchone()
-        return round(amount + row["total"], 2)
+        return self.get_account_balance(self.default_account_id(), as_of_date)
+
+
+    # -- Konten & Umbuchungen --------------------------------------------------
+    #
+    # Es gibt immer ein Standardkonto („Girokonto“). Es nutzt das bisherige
+    # Startguthaben (set_starting_balance) und nimmt alle Buchungen ohne
+    # Kontozuordnung auf, damit sich für bestehende Daten nichts ändert.
+    # Weitere Konten (Tagesgeld, Bargeld, …) haben ein eigenes Startguthaben.
+    # Umbuchungen zwischen Konten sind keine Einnahmen/Ausgaben und tauchen in
+    # keiner Auswertung auf – sie verschieben nur Geld zwischen den Salden.
+
+    def _ensure_account_tables(self):
+        c = self.conn
+        c.executescript("""
+        CREATE TABLE IF NOT EXISTS accounts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            icon TEXT NOT NULL DEFAULT '🏦',
+            is_default INTEGER NOT NULL DEFAULT 0,
+            opening_amount REAL NOT NULL DEFAULT 0,
+            opening_date TEXT
+        );
+        CREATE TABLE IF NOT EXISTS transfers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT NOT NULL,
+            amount REAL NOT NULL,
+            from_account_id INTEGER NOT NULL,
+            to_account_id INTEGER NOT NULL,
+            description TEXT
+        );
+        """)
+        cols = {row["name"] for row in c.execute("PRAGMA table_info(transactions)")}
+        if "account_id" not in cols:
+            c.execute("ALTER TABLE transactions ADD COLUMN account_id INTEGER")
+        self._ensure_default_account()
+        c.commit()
+
+    def _ensure_default_account(self):
+        c = self.conn
+        if c.execute("SELECT 1 FROM accounts WHERE is_default = 1").fetchone():
+            return
+        row = c.execute("SELECT id FROM accounts WHERE name = 'Girokonto'").fetchone()
+        if row:
+            c.execute("UPDATE accounts SET is_default = 1 WHERE id = ?", (row["id"],))
+        else:
+            c.execute("INSERT INTO accounts (name, icon, is_default) VALUES ('Girokonto', '🏦', 1)")
+        c.commit()
+
+    def default_account_id(self):
+        return self.conn.execute("SELECT id FROM accounts WHERE is_default = 1").fetchone()["id"]
+
+    def list_accounts(self):
+        """Alle Konten, das Standardkonto zuerst."""
+        return self.conn.execute(
+            "SELECT * FROM accounts ORDER BY is_default DESC, name COLLATE NOCASE").fetchall()
+
+    def get_account(self, account_id):
+        return self.conn.execute("SELECT * FROM accounts WHERE id = ?", (account_id,)).fetchone()
+
+    def add_account(self, name, icon="🏦", opening_amount=0.0, opening_date=None):
+        name = (name or "").strip()
+        if not name:
+            raise ValueError("Der Kontoname darf nicht leer sein.")
+        if self.conn.execute("SELECT 1 FROM accounts WHERE LOWER(name) = LOWER(?)", (name,)).fetchone():
+            raise ValueError(f"Ein Konto „{name}“ gibt es schon.")
+        cur = self.conn.execute(
+            "INSERT INTO accounts (name, icon, is_default, opening_amount, opening_date) "
+            "VALUES (?, ?, 0, ?, ?)",
+            (name, icon or "🏦", float(opening_amount or 0),
+             opening_date or datetime.date.today().isoformat()))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def update_account(self, account_id, name, icon, opening_amount=None, opening_date=None):
+        """Benennt ein Konto um. Startguthaben/-datum gelten nur für Nicht-Standardkonten
+        (das Standardkonto nutzt das Startguthaben aus der Finanzplanung)."""
+        acc = self.get_account(account_id)
+        if acc is None:
+            raise ValueError("Konto nicht gefunden.")
+        name = (name or "").strip()
+        if not name:
+            raise ValueError("Der Kontoname darf nicht leer sein.")
+        if self.conn.execute("SELECT 1 FROM accounts WHERE LOWER(name) = LOWER(?) AND id != ?",
+                             (name, account_id)).fetchone():
+            raise ValueError(f"Ein Konto „{name}“ gibt es schon.")
+        if acc["is_default"]:
+            self.conn.execute("UPDATE accounts SET name = ?, icon = ? WHERE id = ?",
+                              (name, icon or acc["icon"], account_id))
+        else:
+            self.conn.execute(
+                "UPDATE accounts SET name = ?, icon = ?, opening_amount = ?, opening_date = ? WHERE id = ?",
+                (name, icon or acc["icon"],
+                 float(opening_amount if opening_amount is not None else acc["opening_amount"]),
+                 opening_date or acc["opening_date"], account_id))
+        self.conn.commit()
+
+    def delete_account(self, account_id):
+        """Löscht ein leeres Nicht-Standardkonto. Hat es noch Buchungen oder
+        Umbuchungen, bleibt es erhalten (ValueError)."""
+        acc = self.get_account(account_id)
+        if acc is None:
+            return
+        if acc["is_default"]:
+            raise ValueError("Das Standardkonto kann nicht gelöscht werden.")
+        used = self.conn.execute("SELECT COUNT(*) FROM transactions WHERE account_id = ?",
+                                 (account_id,)).fetchone()[0]
+        moved = self.conn.execute(
+            "SELECT COUNT(*) FROM transfers WHERE from_account_id = ? OR to_account_id = ?",
+            (account_id, account_id)).fetchone()[0]
+        if used or moved:
+            raise ValueError("Das Konto hat noch Buchungen oder Umbuchungen und kann nicht gelöscht werden.")
+        self.conn.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
+        self.conn.commit()
+
+    def resolve_account_id(self, name_or_id):
+        """Konto-ID zu einem Namen (ohne Beachtung der Schreibweise) oder einer ID; None, wenn unbekannt."""
+        if name_or_id is None or name_or_id == "":
+            return None
+        if isinstance(name_or_id, int):
+            row = self.get_account(name_or_id)
+        else:
+            row = self.conn.execute("SELECT * FROM accounts WHERE LOWER(name) = LOWER(?)",
+                                    (str(name_or_id).strip(),)).fetchone()
+        return row["id"] if row else None
+
+    def add_transfer(self, date, amount, from_account_id, to_account_id, description=""):
+        amount = round(float(amount), 2)
+        if amount <= 0:
+            raise ValueError("Der Betrag einer Umbuchung muss größer als 0 sein.")
+        if from_account_id == to_account_id:
+            raise ValueError("Quell- und Zielkonto müssen verschieden sein.")
+        if not self.get_account(from_account_id) or not self.get_account(to_account_id):
+            raise ValueError("Konto nicht gefunden.")
+        cur = self.conn.execute(
+            "INSERT INTO transfers (date, amount, from_account_id, to_account_id, description) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (date, amount, from_account_id, to_account_id, (description or "").strip()))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def list_transfers(self, limit=None):
+        sql = ("SELECT t.*, a.name AS from_name, a.icon AS from_icon, "
+               "b.name AS to_name, b.icon AS to_icon FROM transfers t "
+               "JOIN accounts a ON a.id = t.from_account_id "
+               "JOIN accounts b ON b.id = t.to_account_id "
+               "ORDER BY t.date DESC, t.id DESC")
+        if limit:
+            sql += f" LIMIT {int(limit)}"
+        return self.conn.execute(sql).fetchall()
+
+    def delete_transfer(self, transfer_id):
+        self.conn.execute("DELETE FROM transfers WHERE id = ?", (transfer_id,))
+        self.conn.commit()
+
+    def get_account_balance(self, account_id, as_of_date=None):
+        """Saldo eines Kontos: Startguthaben + Buchungen dieses Kontos + Umbuchungen
+        ab dem Stichtag bis einschließlich as_of_date (Standard: heute). Das
+        Standardkonto nimmt zusätzlich alle Buchungen ohne Kontozuordnung auf.
+        None, falls für das Standardkonto noch kein Startguthaben hinterlegt ist."""
+        acc = self.get_account(account_id)
+        if acc is None:
+            return None
+        if as_of_date is None:
+            as_of_date = datetime.date.today().isoformat()
+        elif hasattr(as_of_date, "isoformat"):
+            as_of_date = as_of_date.isoformat()
+        if acc["is_default"]:
+            base, ref = self.get_starting_balance()
+            if base is None:
+                return None
+            tx_filter = "(account_id = ? OR account_id IS NULL)"
+        else:
+            base, ref = float(acc["opening_amount"] or 0), acc["opening_date"] or "0000-01-01"
+            tx_filter = "account_id = ?"
+        tx = self.conn.execute(
+            f"SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE {tx_filter} "
+            "AND date >= ? AND date <= ?", (account_id, ref, as_of_date)).fetchone()[0]
+        tin = self.conn.execute(
+            "SELECT COALESCE(SUM(amount), 0) FROM transfers WHERE to_account_id = ? "
+            "AND date >= ? AND date <= ?", (account_id, ref, as_of_date)).fetchone()[0]
+        tout = self.conn.execute(
+            "SELECT COALESCE(SUM(amount), 0) FROM transfers WHERE from_account_id = ? "
+            "AND date >= ? AND date <= ?", (account_id, ref, as_of_date)).fetchone()[0]
+        return round(base + tx + tin - tout, 2)
 
     # -- Notgroschen als Unterkonto -------------------------------------------
 
@@ -1502,7 +1729,15 @@ class FinanceStore:
             goal = self.get_goal_by_name("Notgroschen")
             if goal:
                 pocket = round(float(goal["current_amount"]), 2)
-        return {"giro": giro, "pocket": pocket, "total": round(giro + pocket, 2)}
+        accounts = []
+        total = giro + pocket
+        for acc in self.list_accounts():
+            bal = giro if acc["is_default"] else self.get_account_balance(acc["id"])
+            accounts.append({"id": acc["id"], "name": acc["name"], "icon": acc["icon"],
+                             "is_default": bool(acc["is_default"]), "balance": bal})
+            if not acc["is_default"]:
+                total += bal
+        return {"giro": giro, "pocket": pocket, "total": round(total, 2), "accounts": accounts}
 
     # -- Übersichtsseite ----------------------------------------------------------
 
@@ -1731,6 +1966,88 @@ class FinanceStore:
     def dismiss_month_summary(self, month):
         self.set_setting("month_summary_seen", month)
 
+
+    # -- Jahresabschluss ----------------------------------------------------------
+
+    def year_summary(self, year):
+        """Kennzahlen eines Kalenderjahres: Einnahmen, Ausgaben, Gespartes,
+        Sparquote, Vergleich zum Vorjahr, größte Ausgabenkategorien, teuerster
+        und sparsamster Monat sowie in Sparziele eingezahlte Beträge."""
+        def sums(y):
+            row = self.conn.execute(
+                "SELECT COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END), 0) AS income, "
+                "COALESCE(SUM(CASE WHEN amount < 0 THEN -amount ELSE 0 END), 0) AS expense, "
+                "COUNT(*) AS n FROM transactions WHERE date LIKE ?", (f"{y:04d}-%",)).fetchone()
+            return row["income"], row["expense"], row["n"]
+
+        income, expense, count = sums(year)
+        prev_income, prev_expense, prev_count = sums(year - 1)
+        monthly = []
+        for r in self.conn.execute(
+                "SELECT SUBSTR(date, 6, 2) AS m, "
+                "COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END), 0) AS income, "
+                "COALESCE(SUM(CASE WHEN amount < 0 THEN -amount ELSE 0 END), 0) AS expense "
+                "FROM transactions WHERE date LIKE ? GROUP BY m ORDER BY m", (f"{year:04d}-%",)):
+            monthly.append({"month": int(r["m"]), "income": r["income"], "expense": r["expense"],
+                            "saved": r["income"] - r["expense"]})
+        top = [{"name": r["name"], "icon": r["icon"], "amount": r["total"],
+                "share": r["total"] / expense if expense else 0.0}
+               for r in self.conn.execute(
+                   "SELECT c.name AS name, c.icon AS icon, SUM(-t.amount) AS total "
+                   "FROM transactions t JOIN categories c ON t.category_id = c.id "
+                   "WHERE t.date LIKE ? AND t.amount < 0 GROUP BY c.id "
+                   "ORDER BY total DESC LIMIT 3", (f"{year:04d}-%",))]
+        to_goals = self.conn.execute(
+            "SELECT COALESCE(SUM(amount), 0) FROM savings_contributions WHERE date LIKE ? AND amount > 0",
+            (f"{year:04d}-%",)).fetchone()[0]
+        return {
+            "year": year, "count": count, "income": income, "expense": expense,
+            "saved": income - expense,
+            "saving_rate": (income - expense) / income if income > 0 else None,
+            "prev_income": prev_income if prev_count else None,
+            "prev_expense": prev_expense if prev_count else None,
+            "prev_saved": (prev_income - prev_expense) if prev_count else None,
+            "expense_change": ((expense - prev_expense) / prev_expense
+                               if prev_count and prev_expense > 0 else None),
+            "top_categories": top,
+            "avg_monthly_expense": (expense / len(monthly)) if monthly else 0.0,
+            "most_expensive_month": max(monthly, key=lambda m: m["expense"]) if monthly else None,
+            "best_month": max(monthly, key=lambda m: m["saved"]) if monthly else None,
+            "to_goals": to_goals,
+        }
+
+    def pending_year_summary(self, today=None):
+        """Jahresabschluss für das Vorjahr: nur in den ersten drei Monaten eines
+        Jahres, solange er Buchungen enthält und nicht ausgeblendet wurde."""
+        today = today or datetime.date.today()
+        if today.month > 3:
+            return None
+        year = today.year - 1
+        if self.get_setting("year_summary_seen") == str(year):
+            return None
+        summary = self.year_summary(year)
+        return summary if summary["count"] else None
+
+    def dismiss_year_summary(self, year):
+        self.set_setting("year_summary_seen", str(year))
+
+    def list_years_with_transactions(self):
+        return [int(r[0]) for r in self.conn.execute(
+            "SELECT DISTINCT SUBSTR(date, 1, 4) FROM transactions ORDER BY 1 DESC") if r[0].isdigit()]
+
+    # -- Ähnliche Buchungen ------------------------------------------------------
+
+    def similar_transactions(self, date, amount, exclude_id=None):
+        """Andere Buchungen am selben Tag mit demselben Betrag – mögliche Duplikate."""
+        params = [date, float(amount) - 0.005, float(amount) + 0.005]
+        sql = ("SELECT t.id, t.date, t.amount, t.description, c.name AS category_name, c.icon "
+               "FROM transactions t JOIN categories c ON t.category_id = c.id "
+               "WHERE t.date = ? AND t.amount BETWEEN ? AND ?")
+        if exclude_id is not None:
+            sql += " AND t.id != ?"
+            params.append(exclude_id)
+        return self.conn.execute(sql + " ORDER BY t.id", params).fetchall()
+
     def export_transactions_csv(self, path):
         rows = self.list_transactions()
         with open(path, "w", newline="", encoding="utf-8") as f:
@@ -1946,6 +2263,8 @@ class FinanceStore:
             "savings_contributions": [dict(r) for r in self.conn.execute("SELECT * FROM savings_contributions")],
             "etf_plans": [dict(r) for r in self.conn.execute("SELECT * FROM etf_plans")],
             "quick_templates": [dict(r) for r in self.conn.execute("SELECT * FROM quick_templates")],
+            "accounts": [dict(r) for r in self.conn.execute("SELECT * FROM accounts")],
+            "transfers": [dict(r) for r in self.conn.execute("SELECT * FROM transfers")],
             "settings": [dict(r) for r in self.conn.execute("SELECT * FROM settings")],
             "exported_at": datetime.datetime.now().isoformat(),
         }
@@ -1965,6 +2284,9 @@ class FinanceStore:
         # enthält; ältere Backups kennen sie nicht und sollen sie nicht löschen.
         if "settings" in data:
             tables.append("settings")
+        # Konten/Umbuchungen nur ersetzen, wenn das Backup sie enthält (ältere nicht).
+        if "accounts" in data:
+            tables += ["accounts", "transfers"]
         for table in tables:
             c.execute(f"DELETE FROM {table}")
 
@@ -1988,7 +2310,10 @@ class FinanceStore:
         insert_all("etf_plans", data.get("etf_plans", []))
         insert_all("quick_templates", data.get("quick_templates", []))
         insert_all("settings", data.get("settings", []))
+        insert_all("accounts", data.get("accounts", []))
+        insert_all("transfers", data.get("transfers", []))
 
         c.execute("PRAGMA foreign_keys = ON")
         c.commit()
+        self._ensure_account_tables()
         self._generated_horizon = None

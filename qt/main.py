@@ -45,6 +45,7 @@ from PySide6.QtGui import QIcon, QColor, QTextCharFormat, QPalette, QShortcut, Q
 from db import FinanceStore, add_months, DATA_DIR, year_summary_lines
 import sync_tools
 import update_check
+import report_pdf
 from version import APP_VERSION
 from i18n import tr, set_language, get_language, LANGUAGES, months, months_short, weekdays, weekdays_short
 import theme
@@ -54,7 +55,7 @@ from theme import (
 from charts import (
     PieChartWidget, TrendChartWidget, SankeyWidget, EtfComparisonWidget,
     CategoryCompareWidget, CategoryYearWidget, YearCompareWidget, format_delta,
-    fmt_amount, color_for_index,
+    fmt_amount, color_for_index, BandChartWidget, fmt_short,
 )
 from dialogs import (
     TransactionDialog, RecurringTemplatesDialog, BudgetDialog, GoalDialog,
@@ -266,6 +267,10 @@ class MainWindow(QMainWindow):
             self.nav.setCurrentRow(index)
         if index == self.tab_index["overview"]:
             self._refresh_dashboard()
+        elif index == self.tab_index["planning"]:
+            self._refresh_current_balance_display()      # inkl. Cashflow-Vorschau
+        elif index == self.tab_index["export"]:
+            self._refresh_report_months()
 
     def _go_to(self, key):
         self.tabs.setCurrentIndex(self.tab_index[key])
@@ -315,6 +320,7 @@ class MainWindow(QMainWindow):
         title.setObjectName("cardTitle")
         row.addWidget(title, 1)
         row.addWidget(make_link_button(tr('Auswertungen'), lambda: self._go_to("stats")))
+        row.addWidget(make_link_button(tr('Als PDF…'), lambda: self._on_export_month_pdf(sm["month"])))
         row.addWidget(make_link_button(tr('Ausblenden'), lambda: self._dismiss_month_summary(sm["month"])))
         lay.addLayout(row)
 
@@ -1589,6 +1595,32 @@ class MainWindow(QMainWindow):
         balance_hint.setWordWrap(True)
         balance_grid.addWidget(balance_hint, 6, 0, 1, 3)
 
+        # -- Abschnitt: Cashflow-Vorschau --
+        cf_group = QGroupBox(tr('Cashflow-Vorschau'))
+        layout.addWidget(cf_group)
+        cf_layout = QVBoxLayout(cf_group)
+        cf_controls = QHBoxLayout()
+        cf_layout.addLayout(cf_controls)
+        cf_controls.addWidget(QLabel(tr('Zeitraum:')))
+        self.cashflow_months_combo = QComboBox()
+        for n in (3, 6, 12):
+            self.cashflow_months_combo.addItem(tr('{0} Monate').format(n), n)
+        self.cashflow_months_combo.setCurrentIndex(1)
+        self.cashflow_months_combo.currentIndexChanged.connect(self._refresh_cashflow)
+        cf_controls.addWidget(self.cashflow_months_combo)
+        self.cashflow_estimate_check = QCheckBox(tr('Alltagsbuchungen schätzen'))
+        self.cashflow_estimate_check.setChecked(True)
+        self.cashflow_estimate_check.toggled.connect(self._refresh_cashflow)
+        cf_controls.addWidget(self.cashflow_estimate_check)
+        cf_controls.addWidget(make_help_button(
+            tr('Zeigt, wie sich dein Gesamtkontostand (alle Konten) bis zum Ende der nächsten Monate entwickeln könnte. Grundlage sind die bereits eingetragenen künftigen und wiederkehrenden Buchungen. Mit „Alltagsbuchungen schätzen“ kommt je Monat der Durchschnitt deiner nicht wiederkehrenden Einnahmen und Ausgaben der letzten bis zu drei Monate dazu – abzüglich dessen, was im Monat schon eingetragen ist. Angezeigt werden Monatsendstände – zwischendurch kann der Stand tiefer liegen (z. B. Miete vor Gehaltseingang). Das ist eine Hochrechnung, keine Vorhersage.')))
+        cf_controls.addStretch()
+        self.cashflow_chart = BandChartWidget()
+        cf_layout.addWidget(self.cashflow_chart)
+        self.cashflow_label = QLabel()
+        self.cashflow_label.setWordWrap(True)
+        cf_layout.addWidget(self.cashflow_label)
+
         # -- Abschnitt A: Notgroschen --
         ng_group = QGroupBox(tr('Notgroschen einrichten (3–6 Monate Fixkosten)'))
         layout.addWidget(ng_group)
@@ -1754,6 +1786,50 @@ class MainWindow(QMainWindow):
                 lines.append(tr('Gesamt: {0}').format(fmt_amount(bd['total'])))
                 text = "\n".join(lines)
             self.current_balance_label.setText(text)
+        self._refresh_cashflow()
+
+    def _refresh_cashflow(self, *_args):
+        if not hasattr(self, "cashflow_chart"):
+            return
+        fc = self.store.cashflow_forecast(self.cashflow_months_combo.currentData(),
+                                          include_estimate=self.cashflow_estimate_check.isChecked())
+        if fc is None:
+            self.cashflow_chart.set_data(
+                [], [], empty_text=tr('Erst oben einen Kontostand hinterlegen – dann erscheint hier die Vorschau.'))
+            self.cashflow_label.setText("")
+            return
+        names = months_short()
+
+        def label(month):
+            return f"{names[int(month[5:7]) - 1]} {month[2:4]}"
+
+        pts = fc["months"]
+        labels = [tr('Heute')] + [label(m["month"]) for m in pts]
+        values = [fc["start_balance"]] + [m["balance"] for m in pts]
+        self.cashflow_chart.set_data(
+            labels, [{"name": tr('Gesamtkontostand'), "color": QColor(51, 120, 191), "values": values}],
+            zero_line=True)
+        end = pts[-1]
+        month_names = months()
+
+        def long_label(month):
+            return f"{month_names[int(month[5:7]) - 1]} {month[:4]}"
+
+        lines = [tr('Kontostand heute {0} → Ende {1}: {2}.').format(
+            fmt_amount(fc["start_balance"]), long_label(end["month"]), fmt_amount(end["balance"]))]
+        if fc["first_negative"]:
+            lines.append(tr('Achtung: Zum Ende {0} liegt das Konto voraussichtlich im Minus (tiefster Monatsendstand {1}).').format(
+                long_label(fc["first_negative"]), fmt_amount(fc["lowest"]["balance"])))
+        else:
+            lines.append(tr('Tiefster erwarteter Stand zum Monatsende: {0} ({1}).').format(
+                fmt_amount(fc["lowest"]["balance"]), long_label(fc["lowest"]["month"])))
+        if fc["include_estimate"]:
+            if fc["months_used"]:
+                lines.append(tr('Geschätzt: im Schnitt {0} Einnahmen und {1} Ausgaben pro Monat außerhalb wiederkehrender Buchungen (Ø der letzten {2} Monate).').format(
+                    fmt_amount(fc["avg_in"]), fmt_amount(fc["avg_out"]), fc["months_used"]))
+            else:
+                lines.append(tr('Keine Vormonate mit Buchungen – es zählen nur eingetragene und wiederkehrende Buchungen.'))
+        self.cashflow_label.setText("\n".join(lines))
 
     def _on_manage_accounts(self):
         AccountsDialog(self, self.store).exec()
@@ -2103,6 +2179,25 @@ class MainWindow(QMainWindow):
         self.etf_scenario_table.setMaximumHeight(120)
         layout.addWidget(self.etf_scenario_table)
 
+        mc_box = QHBoxLayout()
+        layout.addLayout(mc_box)
+        mc_box.addWidget(QLabel(tr('<b>Streuung</b> – Schwankung (Volatilität):')))
+        self.etf_vol_spin = QDoubleSpinBox()
+        self.etf_vol_spin.setRange(0, 60)
+        self.etf_vol_spin.setDecimals(1)
+        self.etf_vol_spin.setValue(15.0)
+        self.etf_vol_spin.setSuffix(tr(' % p.a.'))
+        self.etf_vol_spin.valueChanged.connect(self._refresh_etf_scenarios)
+        mc_box.addWidget(self.etf_vol_spin)
+        mc_box.addWidget(make_help_button(
+            tr('800 Zufallsverläufe mit der oben eingestellten Rendite und Schwankung. Das Band zeigt, in welchem Bereich 80 % der Verläufe landen (10 %–90 %), die Linie den Median. Breit gestreute Aktien-ETFs schwanken historisch grob um 15 % pro Jahr – das ist ein Rechenbeispiel, keine Prognose und keine Anlageempfehlung. Die Steuer wird in dieser Grafik vereinfacht am Laufzeitende angesetzt.')))
+        mc_box.addStretch()
+        self.etf_mc_chart = BandChartWidget()
+        layout.addWidget(self.etf_mc_chart)
+        self.etf_mc_label = QLabel()
+        self.etf_mc_label.setWordWrap(True)
+        layout.addWidget(self.etf_mc_label)
+
         self.etf_result_table = QTableWidget(0, 5)
         self.etf_result_table.setHorizontalHeaderLabels(
             [tr('Jahr'), tr('Sparrate'), tr('Eingezahlt'), tr('Wert'), tr('Gewinn')])
@@ -2159,6 +2254,35 @@ class MainWindow(QMainWindow):
                 if col:
                     item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 self.etf_scenario_table.setItem(row, col, item)
+        self._refresh_etf_monte_carlo(cap)
+
+    def _refresh_etf_monte_carlo(self, cap):
+        if not hasattr(self, "etf_mc_chart"):
+            return
+        mc = FinanceStore.etf_monte_carlo(
+            self.etf_amount_spin.value(), self.etf_return_spin.value(), self.etf_vol_spin.value(),
+            self.etf_years_spin.value(),
+            annual_increase_percent=self.etf_increase_spin.value(),
+            max_monthly_amount=cap if cap > 0 else None,
+            inflation_percent=self.etf_inflation_spin.value(),
+            teilfreistellung_percent=self.etf_teilfreistellung_spin.value(),
+            kapitalertragsteuer_percent=self.etf_kest_spin.value(),
+            soli_percent=self.etf_soli_spin.value(),
+            sparerpauschbetrag=self.etf_pauschbetrag_spin.value())
+        blue = QColor(51, 120, 191)
+        self.etf_mc_chart.set_data(
+            [tr('J{0}').format(y) for y in mc["years"]],
+            [{"name": tr('Median'), "color": blue, "values": mc["p50"]},
+             {"name": tr('Eingezahlt'), "color": QColor(120, 134, 150), "values": mc["invested"],
+              "dashed": True}],
+            band={"name": tr('mittlere 80 % der Verläufe'), "color": blue,
+                  "low": mc["p10"], "high": mc["p90"]})
+        f = mc["final"]
+        self.etf_mc_label.setText(tr('Nach {0} Jahren (vor Steuern): Median {1}; in 10 % der Verläufe weniger als {2}, in 10 % mehr als {3}.\nNach Steuern in heutiger Kaufkraft: Median {4} (unten {5}, oben {6}). In {7:.0f} % der Verläufe liegt der Endwert unter den Einzahlungen.').format(
+            mc["years"][-1], fmt_amount(f["p50"]["value"]), fmt_amount(f["p10"]["value"]),
+            fmt_amount(f["p90"]["value"]), fmt_amount(f["p50"]["real_value_after_tax"]),
+            fmt_amount(f["p10"]["real_value_after_tax"]), fmt_amount(f["p90"]["real_value_after_tax"]),
+            mc["loss_probability"] * 100))
 
     def _on_vorab_toggled(self, active):
         self.etf_basiszins_spin.setEnabled(active)
@@ -3153,6 +3277,18 @@ class MainWindow(QMainWindow):
         text(lay, tr('CSV-Import: Buchungen aus einer anderen Haushaltsbuch- oder Banking-Software übernehmen. Trennzeichen sowie deutsche/englische Zahlen- und Datumsformate werden automatisch erkannt.'))
         button(lay, tr('Buchungen aus CSV importieren…'), self._on_import_csv)
 
+        lay = section(tr('PDF-Monatsbericht'))
+        text(lay, tr('Ein Monat auf ein bis zwei Seiten: Kennzahlen, Ausgaben nach Kategorie, Einnahmen, Budgets und die größten Ausgaben – zum Ablegen oder Ausdrucken.'))
+        pdf_row = QHBoxLayout()
+        self.report_month_combo = QComboBox()
+        self._refresh_report_months()
+        pdf_row.addWidget(self.report_month_combo)
+        pdf_btn = QPushButton(tr('Bericht als PDF speichern…'))
+        pdf_btn.clicked.connect(lambda: self._on_export_month_pdf(self.report_month_combo.currentData()))
+        pdf_row.addWidget(pdf_btn)
+        pdf_row.addStretch()
+        lay.addLayout(pdf_row)
+
         lay = section(tr('Sicherung'))
         text(lay, tr('Vollständiges Backup (JSON) – enthält alle Buchungen, Vorlagen, Budgets, Sparziele, ETF-Pläne und Kategorien.'))
         row = QHBoxLayout()
@@ -3317,6 +3453,37 @@ class MainWindow(QMainWindow):
     def _on_backup_now(self):
         path = self.store.create_db_backup(force=True)
         self.export_status_label.setText(tr('Datenbank gesichert: {0}').format(path))
+
+    def _refresh_report_months(self):
+        if not hasattr(self, "report_month_combo"):
+            return
+        previous = self.report_month_combo.currentData()
+        self.report_month_combo.clear()
+        names = months()
+        for m in self.store.list_months_with_transactions():
+            self.report_month_combo.addItem(f"{names[int(m[5:7]) - 1]} {m[:4]}", m)
+        index = self.report_month_combo.findData(previous)
+        if index >= 0:
+            self.report_month_combo.setCurrentIndex(index)
+
+    def _on_export_month_pdf(self, month):
+        if not month:
+            QMessageBox.information(self, tr('PDF-Monatsbericht'), tr('Noch keine Buchungen vorhanden.'))
+            return
+        default = f"plutos-bericht-{month}.pdf"
+        path, _ = QFileDialog.getSaveFileName(self, tr('PDF-Monatsbericht speichern'), default,
+                                               "PDF (*.pdf)")
+        if not path:
+            return
+        try:
+            report_pdf.build_month_report(self.store.month_report_data(month), path, tr,
+                                          fmt_amount, months())
+        except OSError as exc:
+            QMessageBox.warning(self, tr('PDF-Monatsbericht'), str(exc))
+            return
+        if hasattr(self, "export_status_label"):
+            self.export_status_label.setText(tr('Bericht gespeichert: {0}').format(path))
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
     def _on_export_json(self):
         path, _ = QFileDialog.getSaveFileName(self, tr('Backup als JSON exportieren'),

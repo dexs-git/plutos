@@ -100,6 +100,12 @@ class TransactionDialog(QDialog):
         grid.addWidget(QLabel(tr('Beschreibung:')), 4, 0)
         self.description_edit = QLineEdit(existing["description"] if existing else "")
         grid.addWidget(self.description_edit, 4, 1)
+        # Kategorie-Regeln: beim Tippen der Beschreibung die Kategorie vorschlagen,
+        # solange man Art/Kategorie nicht selbst angefasst hat (nur bei neuen Buchungen).
+        self._category_touched = bool(existing)
+        self.category_combo.activated.connect(self._mark_category_touched)
+        self.kind_combo.activated.connect(self._mark_category_touched)
+        self.description_edit.textEdited.connect(self._on_description_edited)
 
         grid.addWidget(QLabel(tr('Tags:')), 5, 0)
         self.tags_edit = QLineEdit(
@@ -145,10 +151,36 @@ class TransactionDialog(QDialog):
                 note.setWordWrap(True)
                 grid.addWidget(note, 7, 0, 1, 2)
 
+        self.rule_hint = QLabel("")
+        self.rule_hint.setEnabled(False)
+        self.rule_hint.hide()
+        layout.addWidget(self.rule_hint)
+
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    def _mark_category_touched(self, *_args):
+        self._category_touched = True
+        self.rule_hint.hide()
+
+    def _on_description_edited(self, text):
+        if self._category_touched:
+            return
+        cat = self.store.suggest_category(text)
+        if cat is None:
+            self.rule_hint.hide()
+            return
+        index = self.kind_combo.findData(cat["kind"])
+        if index >= 0 and index != self.kind_combo.currentIndex():
+            self.kind_combo.setCurrentIndex(index)      # lädt die Kategorien neu
+        index = self.category_combo.findData(cat["id"])
+        if index >= 0:
+            self.category_combo.setCurrentIndex(index)
+        self.rule_hint.setText(tr('Kategorie nach Regel vorgeschlagen: {0} {1}').format(
+            cat["icon"], cat["name"]))
+        self.rule_hint.show()
 
     def find_similar(self):
         """Bereits vorhandene Buchungen am selben Tag mit demselben Betrag (mögliche
@@ -674,6 +706,11 @@ class CategoryManagerDialog(QDialog):
         del_btn = QPushButton(tr('Löschen'))
         del_btn.clicked.connect(self._on_delete)
         btn_box.addWidget(del_btn)
+
+        rules_btn = QPushButton(tr('Regeln…'))
+        rules_btn.setToolTip(tr('Stichwörter, die Buchungen automatisch einer Kategorie zuordnen'))
+        rules_btn.clicked.connect(lambda: CategoryRulesDialog(self, self.store).exec())
+        btn_box.addWidget(rules_btn)
         btn_box.addStretch()
 
         close_btn = QPushButton(tr('Schließen'))
@@ -734,6 +771,155 @@ class CategoryManagerDialog(QDialog):
         )
         if response == QMessageBox.Ok:
             self.store.delete_category(selected["id"])
+            self._refresh()
+
+
+class RuleEditDialog(QDialog):
+    """Stichwort + Kategorie für eine Kategorie-Regel."""
+
+    def __init__(self, parent, store: FinanceStore, keyword="", category_id=None):
+        super().__init__(parent)
+        self.setWindowTitle(tr('Regel bearbeiten') if keyword else tr('Regel hinzufügen'))
+        self.setMinimumWidth(380)
+        layout = QVBoxLayout(self)
+        grid = QGridLayout()
+        layout.addLayout(grid)
+        grid.addWidget(QLabel(tr('Stichwort:')), 0, 0)
+        self.keyword_edit = QLineEdit(keyword)
+        self.keyword_edit.setPlaceholderText(tr('z. B. rewe (Groß-/Kleinschreibung egal)'))
+        grid.addWidget(self.keyword_edit, 0, 1)
+        grid.addWidget(QLabel(tr('Kategorie:')), 1, 0)
+        self.category_combo = QComboBox()
+        for cat in store.list_categories():
+            kind = tr('Einnahme') if cat["kind"] == "einnahme" else tr('Ausgabe')
+            self.category_combo.addItem(f"{cat['icon']} {cat['name']} ({kind})", cat["id"])
+            if cat["id"] == category_id:
+                self.category_combo.setCurrentIndex(self.category_combo.count() - 1)
+        grid.addWidget(self.category_combo, 1, 1)
+        note = QLabel(tr('Enthält die Beschreibung einer Buchung das Stichwort, wird diese Kategorie vorgeschlagen.'))
+        note.setWordWrap(True)
+        note.setEnabled(False)
+        layout.addWidget(note)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def get_data(self):
+        keyword = self.keyword_edit.text().strip()
+        if not keyword or self.category_combo.currentData() is None:
+            return None
+        return keyword, self.category_combo.currentData()
+
+
+class CategoryRulesDialog(QDialog):
+    """Verwaltung der Kategorie-Regeln inkl. kleinem Ausprobier-Feld."""
+
+    def __init__(self, parent, store: FinanceStore):
+        super().__init__(parent)
+        self.store = store
+        self.setWindowTitle(tr('Kategorie-Regeln'))
+        self.resize(500, 460)
+        layout = QVBoxLayout(self)
+        intro = QLabel(tr('Regeln ordnen Buchungen anhand eines Stichworts in der Beschreibung automatisch einer Kategorie zu – beim Eintippen, im Sync-Ordner (Kategorie leer lassen) und überall, wo keine Kategorie angegeben ist. Bei mehreren Treffern gewinnt das längste Stichwort.'))
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        self.table = QTableWidget(0, 2)
+        self.table.setHorizontalHeaderLabels([tr('Stichwort'), tr('Kategorie')])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.doubleClicked.connect(lambda *_: self._on_edit())
+        layout.addWidget(self.table)
+
+        btn_box = QHBoxLayout()
+        layout.addLayout(btn_box)
+        for label, handler in ((tr('Hinzufügen'), self._on_add), (tr('Bearbeiten'), self._on_edit),
+                               (tr('Löschen'), self._on_delete)):
+            btn = QPushButton(label)
+            btn.clicked.connect(handler)
+            btn_box.addWidget(btn)
+        btn_box.addStretch()
+
+        test_row = QHBoxLayout()
+        layout.addLayout(test_row)
+        test_row.addWidget(QLabel(tr('Ausprobieren:')))
+        self.test_edit = QLineEdit()
+        self.test_edit.setPlaceholderText(tr('Beschreibung eintippen …'))
+        self.test_edit.textChanged.connect(self._on_test)
+        test_row.addWidget(self.test_edit, 1)
+        self.test_result = QLabel("")
+        test_row.addWidget(self.test_result)
+
+        close_row = QHBoxLayout()
+        layout.addLayout(close_row)
+        close_row.addStretch()
+        close_btn = QPushButton(tr('Schließen'))
+        close_btn.clicked.connect(self.accept)
+        close_row.addWidget(close_btn)
+        self._refresh()
+
+    def _refresh(self):
+        rules = self.store.list_category_rules()
+        self.table.setRowCount(len(rules))
+        for row, r in enumerate(rules):
+            kw = QTableWidgetItem(r["keyword"])
+            kw.setData(Qt.UserRole, r["id"])
+            kw.setData(Qt.UserRole + 1, r["category_id"])
+            self.table.setItem(row, 0, kw)
+            self.table.setItem(row, 1, QTableWidgetItem(f"{r['category_icon']} {r['category_name']}"))
+        self._on_test(self.test_edit.text())
+
+    def _on_test(self, text):
+        cat = self.store.suggest_category(text) if text.strip() else None
+        self.test_result.setText(f"→ {cat['icon']} {cat['name']}" if cat else
+                                 (tr('→ keine Regel passt') if text.strip() else ""))
+
+    def _selected(self):
+        row = self.table.currentRow()
+        if row < 0:
+            return None
+        item = self.table.item(row, 0)
+        return item.data(Qt.UserRole), item.text(), item.data(Qt.UserRole + 1)
+
+    def _on_add(self):
+        dialog = RuleEditDialog(self, self.store)
+        while dialog.exec() == QDialog.Accepted:
+            data = dialog.get_data()
+            if not data:
+                return
+            try:
+                self.store.add_category_rule(*data)
+            except ValueError as exc:
+                QMessageBox.warning(self, tr('Regel hinzufügen'), tr(str(exc)))
+                continue
+            self._refresh()
+            return
+
+    def _on_edit(self):
+        selected = self._selected()
+        if not selected:
+            return
+        rule_id, keyword, category_id = selected
+        dialog = RuleEditDialog(self, self.store, keyword, category_id)
+        while dialog.exec() == QDialog.Accepted:
+            data = dialog.get_data()
+            if not data:
+                return
+            try:
+                self.store.update_category_rule(rule_id, *data)
+            except ValueError as exc:
+                QMessageBox.warning(self, tr('Regel bearbeiten'), tr(str(exc)))
+                continue
+            self._refresh()
+            return
+
+    def _on_delete(self):
+        selected = self._selected()
+        if selected:
+            self.store.delete_category_rule(selected[0])
             self._refresh()
 
 

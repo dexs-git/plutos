@@ -31,6 +31,7 @@ Eine Buchung pro Zeile: `Betrag;Kategorie;Beschreibung;Tags;Datum`
 - Das Vorzeichen ergibt sich aus der Kategorie (Ausgabe → negativ, Einnahme → positiv).
 - Optional als sechstes Feld das **Konto** (z. B. `Tagesgeld`); ohne Angabe landet die Buchung im Standardkonto. Ein unbekannter Kontoname ist ein Fehler.
 - Unbekannte Kategorien führen zu einem Fehler (die Datei wandert nach `fehler/`).
+- **Kategorie leer lassen** (`12,50;;REWE Markt`) oder `?` bzw. `auto` schreiben: Dann bestimmt eine **Kategorie-Regel** (Kategorien verwalten → „Regeln…“) anhand der Beschreibung die Kategorie. Passt keine Regel, ist das ein Fehler. So muss der Kurzbefehl nur Betrag und Text schicken.
 
 ### JSON-Format (`.json`)
 

@@ -77,6 +77,16 @@ Datenbank-Logik teilen:
 - **Ähnliche Buchungen erkennen**: Beim Anlegen warnt Plutos vor einer
   Buchung mit gleichem Tag und Betrag; nach dem Inbox-Import zeigt eine
   Hinweiskarte auf der Übersicht die neuen Buchungen samt möglicher Duplikate
+- **Kategorie-Regeln**: Stichwort in der Beschreibung → Kategorie (z. B. „rewe“ → Lebensmittel).
+  Wirkt beim Eintippen einer Buchung und im Sync-Ordner (Kategorie leer lassen)
+- **Cashflow-Vorschau** (Finanzplanung): voraussichtlicher Gesamtkontostand der nächsten
+  3, 6 oder 12 Monate aus wiederkehrenden Buchungen plus geschätzten Alltagsbuchungen,
+  mit Warnung vor einem Minus am Monatsende
+- **Streuung statt einer Linie** (ETF-Sparplan): Zufallsverläufe mit einstellbarer
+  Schwankung zeigen als Band, in welchem Bereich 80 % der Ergebnisse landen
+  (Rechenbeispiel, keine Prognose und keine Anlageempfehlung)
+- **PDF-Monatsbericht**: Kennzahlen, Ausgaben nach Kategorie, Einnahmen, Budgets und
+  größte Ausgaben als PDF – ohne zusätzliche Programme
 - **Update-Hinweis**: Beim Start wird (abschaltbar) geprüft, ob auf GitHub eine
   neuere Version erschienen ist
 - **Modernes Design**: Seitenleiste mit Icons, eine **Übersichtsseite**

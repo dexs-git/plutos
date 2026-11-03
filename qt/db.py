@@ -28,6 +28,7 @@ import csv
 import re
 import datetime
 import math
+import random
 import sys
 from pathlib import Path
 
@@ -334,6 +335,7 @@ class FinanceStore:
         self.conn.commit()
 
     def delete_category(self, category_id):
+        self.conn.execute("DELETE FROM category_rules WHERE category_id = ?", (category_id,))
         self.conn.execute("DELETE FROM categories WHERE id = ?", (category_id,))
         self.conn.commit()
 
@@ -1586,6 +1588,7 @@ class FinanceStore:
             c.execute("ALTER TABLE transactions ADD COLUMN account_id INTEGER")
         self._ensure_default_account()
         c.commit()
+        self._ensure_rule_table()
 
     def _ensure_default_account(self):
         c = self.conn
@@ -2281,6 +2284,272 @@ class FinanceStore:
             return {"imported": imported, "skipped": skipped,
                     "duplicates": duplicates, "errors": errors}
 
+    # -- Kategorie-Regeln -------------------------------------------------------
+    #
+    # Eine Regel ordnet Buchungen mit einem Stichwort in der Beschreibung
+    # automatisch einer Kategorie zu („rewe“ → Lebensmittel). Es zählt der
+    # längste passende Begriff; Groß-/Kleinschreibung ist egal.
+
+    def _ensure_rule_table(self):
+        self.conn.executescript("""
+        CREATE TABLE IF NOT EXISTS category_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            keyword TEXT NOT NULL COLLATE NOCASE UNIQUE,
+            category_id INTEGER NOT NULL
+        );
+        """)
+        self.conn.commit()
+
+    def list_category_rules(self):
+        """Alle Regeln mit Kategoriename/-art/-icon, sortiert nach Stichwort."""
+        return self.conn.execute("""
+            SELECT r.id, r.keyword, r.category_id, c.name AS category_name,
+                   c.kind AS category_kind, c.icon AS category_icon
+            FROM category_rules r JOIN categories c ON r.category_id = c.id
+            ORDER BY r.keyword COLLATE NOCASE
+        """).fetchall()
+
+    def add_category_rule(self, keyword, category_id):
+        keyword = (keyword or "").strip()
+        if not keyword:
+            raise ValueError("Stichwort fehlt")
+        if self.conn.execute("SELECT 1 FROM categories WHERE id = ?", (category_id,)).fetchone() is None:
+            raise ValueError("Kategorie unbekannt")
+        try:
+            cur = self.conn.execute(
+                "INSERT INTO category_rules (keyword, category_id) VALUES (?, ?)",
+                (keyword, category_id))
+        except sqlite3.IntegrityError:
+            raise ValueError("Für dieses Stichwort gibt es schon eine Regel")
+        self.conn.commit()
+        return cur.lastrowid
+
+    def update_category_rule(self, rule_id, keyword, category_id):
+        keyword = (keyword or "").strip()
+        if not keyword:
+            raise ValueError("Stichwort fehlt")
+        try:
+            self.conn.execute(
+                "UPDATE category_rules SET keyword = ?, category_id = ? WHERE id = ?",
+                (keyword, category_id, rule_id))
+        except sqlite3.IntegrityError:
+            raise ValueError("Für dieses Stichwort gibt es schon eine Regel")
+        self.conn.commit()
+
+    def delete_category_rule(self, rule_id):
+        self.conn.execute("DELETE FROM category_rules WHERE id = ?", (rule_id,))
+        self.conn.commit()
+
+    def suggest_category(self, description):
+        """Kategorie (Zeile aus `categories`) für eine Beschreibung oder None.
+        Passt mehr als eine Regel, gewinnt das längste Stichwort."""
+        text = (description or "").casefold()
+        if not text.strip():
+            return None
+        best = None
+        for r in self.conn.execute("SELECT id, keyword, category_id FROM category_rules"):
+            kw = r["keyword"].casefold()
+            if kw and kw in text and (best is None or len(kw) > len(best["keyword"])
+                                      or (len(kw) == len(best["keyword"]) and r["id"] < best["id"])):
+                best = {"id": r["id"], "keyword": kw, "category_id": r["category_id"]}
+        if best is None:
+            return None
+        return self.conn.execute("SELECT * FROM categories WHERE id = ?",
+                                 (best["category_id"],)).fetchone()
+
+    # -- Cashflow-Vorschau --------------------------------------------------------
+
+    def cashflow_forecast(self, months=6, today=None, include_estimate=True):
+        """Voraussichtlicher Gesamtkontostand (alle Konten, ohne Notgroschen-
+        Unterkonto) am Ende des laufenden und der folgenden `months` Monate.
+
+        Grundlage sind die schon eingetragenen künftigen Buchungen (auch die
+        aus wiederkehrenden Vorlagen). Optional kommt je Monat eine Schätzung
+        für „Alltagsbuchungen“ dazu: der Durchschnitt der nicht
+        wiederkehrenden Einnahmen/Ausgaben der letzten bis zu drei vollen
+        Monate – abzüglich dessen, was im jeweiligen Monat schon eingetragen
+        ist. Das ist eine Hochrechnung, keine Vorhersage.
+
+        None, falls noch kein Startguthaben gesetzt ist."""
+        today = today or datetime.date.today()
+        breakdown = self.get_balance_breakdown()
+        if breakdown is None:
+            return None
+        balance = round(breakdown["total"] - breakdown["pocket"], 2)
+        first = today.replace(day=1)
+        self.ensure_horizon(add_months(first, months + 1))
+
+        def month_sums(month_start, only_after=None):
+            """(wiederkehrend ein, aus, einmalig ein, aus) in einem Monat."""
+            nxt = add_months(month_start, 1)
+            sql = ("SELECT recurring_template_id IS NOT NULL AS rec, "
+                   "COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END), 0) AS i, "
+                   "COALESCE(SUM(CASE WHEN amount < 0 THEN -amount ELSE 0 END), 0) AS o "
+                   "FROM transactions WHERE date >= ? AND date < ?")
+            params = [month_start.isoformat(), nxt.isoformat()]
+            if only_after is not None:
+                sql += " AND date > ?"
+                params.append(only_after.isoformat())
+            sql += " GROUP BY rec"
+            out = {0: (0.0, 0.0), 1: (0.0, 0.0)}
+            for r in self.conn.execute(sql, params):
+                out[int(r["rec"])] = (float(r["i"]), float(r["o"]))
+            return out[1][0], out[1][1], out[0][0], out[0][1]
+
+        avg_in = avg_out = 0.0
+        used = 0
+        if include_estimate:
+            sum_in = sum_out = 0.0
+            for k in range(1, 4):
+                _, _, oi, oo = month_sums(add_months(first, -k))
+                if oi or oo:
+                    sum_in += oi
+                    sum_out += oo
+                    used += 1
+            if used:
+                avg_in, avg_out = sum_in / used, sum_out / used
+
+        points = []
+        lowest = None
+        first_negative = None
+        for k in range(months + 1):
+            ms = add_months(first, k)
+            after = today if k == 0 else None
+            rec_in, rec_out, one_in, one_out = month_sums(ms, only_after=after)
+            est_in = est_out = 0.0
+            if used:
+                _, _, all_oi, all_oo = month_sums(ms)
+                est_in = max(0.0, avg_in - all_oi)
+                est_out = max(0.0, avg_out - all_oo)
+            net = rec_in - rec_out + one_in - one_out + est_in - est_out
+            balance = round(balance + net, 2)
+            point = {"month": ms.strftime("%Y-%m"), "recurring_in": round(rec_in, 2),
+                     "recurring_out": round(rec_out, 2), "other_in": round(one_in, 2),
+                     "other_out": round(one_out, 2), "est_in": round(est_in, 2),
+                     "est_out": round(est_out, 2), "net": round(net, 2), "balance": balance}
+            points.append(point)
+            if lowest is None or balance < lowest["balance"]:
+                lowest = {"month": point["month"], "balance": balance}
+            if first_negative is None and balance < 0:
+                first_negative = point["month"]
+        start = round(breakdown["total"] - breakdown["pocket"], 2)
+        return {"start_balance": start, "start_date": today.isoformat(), "months": points,
+                "avg_in": round(avg_in, 2), "avg_out": round(avg_out, 2), "months_used": used,
+                "lowest": lowest, "first_negative": first_negative,
+                "include_estimate": bool(include_estimate)}
+
+    # -- Streuung der ETF-Simulation (Monte-Carlo) -----------------------------------
+
+    @staticmethod
+    def etf_monte_carlo(monthly_amount, annual_return_percent, volatility_percent,
+                        duration_years, annual_increase_percent=0, max_monthly_amount=None,
+                        runs=800, seed=12345, inflation_percent=2.0,
+                        teilfreistellung_percent=30.0, kapitalertragsteuer_percent=25.0,
+                        soli_percent=5.5, sparerpauschbetrag=1000.0):
+        """Zufallsdurchläufe (log-normal verteilte Monatsrenditen) für einen
+        Sparplan. Die erwartete Jahresrendite entspricht `annual_return_percent`,
+        die Schwankung `volatility_percent` (Standardabweichung p. a.). Mit
+        Volatilität 0 kommt exakt die Linie von project_etf_plan heraus.
+
+        Rückgabe: Perzentile (10/50/90) des Depotwerts je Jahr (vor Steuern),
+        die Einzahlungen je Jahr, für das Laufzeitende Wert, Wert nach Steuern
+        (vereinfachte Abgeltungsteuer am Ende) und Wert nach Steuern in
+        heutiger Kaufkraft sowie der Anteil der Durchläufe, die unter den
+        Einzahlungen landen. Rechenbeispiel, keine Prognose und keine
+        Anlageempfehlung. Feste Startzahl → gleiche Eingaben, gleiche Grafik."""
+        years = max(1, int(duration_years))
+        runs = max(10, int(runs))
+        rng = random.Random(seed)
+        monthly_mean = (1 + annual_return_percent / 100.0) ** (1 / 12) - 1
+        sigma = max(0.0, volatility_percent) / 100.0 / math.sqrt(12)
+        log_mean = math.log(max(1e-9, 1 + monthly_mean)) - sigma * sigma / 2
+
+        contributions = []
+        current = monthly_amount
+        for _ in range(years):
+            contributions.extend([current] * 12)
+            if annual_increase_percent:
+                current *= 1 + annual_increase_percent / 100.0
+                if max_monthly_amount:
+                    current = min(current, max_monthly_amount)
+        invested_by_year = []
+        total = 0.0
+        for y in range(years):
+            total += sum(contributions[y * 12:(y + 1) * 12])
+            invested_by_year.append(round(total, 2))
+
+        exp, gauss = math.exp, rng.gauss
+        per_year = [[] for _ in range(years)]
+        for _ in range(runs):
+            value = 0.0
+            for i, contribution in enumerate(contributions):
+                value = value * exp(log_mean + sigma * gauss(0.0, 1.0)) + contribution
+                if i % 12 == 11:
+                    per_year[i // 12].append(value)
+
+        def pick(values, p):
+            return values[int(round(p * (len(values) - 1)))]
+
+        bands = {"p10": [], "p50": [], "p90": []}
+        for values in per_year:
+            values.sort()
+            bands["p10"].append(round(pick(values, 0.10), 2))
+            bands["p50"].append(round(pick(values, 0.50), 2))
+            bands["p90"].append(round(pick(values, 0.90), 2))
+
+        invested = invested_by_year[-1]
+        deflator = (1 + inflation_percent / 100.0) ** years
+        final = {}
+        for key in ("p10", "p50", "p90"):
+            value = bands[key][-1]
+            tax = FinanceStore.apply_german_capital_gains_tax(
+                value, invested, teilfreistellung_percent=teilfreistellung_percent,
+                kapitalertragsteuer_percent=kapitalertragsteuer_percent,
+                soli_percent=soli_percent, sparerpauschbetrag=sparerpauschbetrag)
+            final[key] = {"value": value, "value_after_tax": tax["value_after_tax"],
+                          "real_value_after_tax": round(tax["value_after_tax"] / deflator, 2)}
+        losses = sum(1 for v in per_year[-1] if v < invested)
+        return {"years": list(range(1, years + 1)), "invested": invested_by_year,
+                "p10": bands["p10"], "p50": bands["p50"], "p90": bands["p90"],
+                "final": final, "loss_probability": losses / len(per_year[-1]),
+                "runs": runs, "volatility": volatility_percent}
+
+    # -- Monatsbericht (PDF) ----------------------------------------------------------
+
+    def list_months_with_transactions(self):
+        """Alle Monate (YYYY-MM) mit mindestens einer Buchung bis zum laufenden
+        Monat (künftige, z. B. aus wiederkehrenden Vorlagen, bleiben außen vor),
+        neueste zuerst."""
+        current = datetime.date.today().strftime("%Y-%m")
+        return [r[0] for r in self.conn.execute(
+            "SELECT DISTINCT substr(date, 1, 7) AS m FROM transactions "
+            "WHERE substr(date, 1, 7) <= ? ORDER BY m DESC", (current,))]
+
+    def month_report_data(self, month):
+        """Alle Zahlen für den PDF-Monatsbericht (YYYY-MM)."""
+        summary = self.month_summary(month)
+        year, mon = int(month[:4]), int(month[5:7])
+        last_day = add_months(datetime.date(year, mon, 1), 1) - datetime.timedelta(days=1)
+        biggest = [dict(r) for r in self.conn.execute("""
+            SELECT t.date, t.amount, t.description, c.name AS category_name
+            FROM transactions t JOIN categories c ON t.category_id = c.id
+            WHERE t.date LIKE ? AND t.amount < 0
+            ORDER BY t.amount ASC, t.date LIMIT 5""", (_month_pattern(month),))]
+        balance = None
+        if self.get_starting_balance()[0] is not None:
+            balance = 0.0
+            for acc in self.list_accounts():
+                bal = self.get_account_balance(acc["id"], last_day)
+                balance += bal or 0.0
+            balance = round(balance, 2)
+        return {
+            "month": month, "summary": summary,
+            "spending": [dict(r) for r in self.spending_by_category(month)],
+            "income": [dict(r) for r in self.income_by_category(month)],
+            "budgets": [r for r in self.budget_overview(month) if r["limit_amount"]],
+            "biggest": biggest, "balance_end": balance,
+        }
+
     def export_backup_json(self, path):
         data = {
             "categories": [dict(r) for r in self.conn.execute("SELECT * FROM categories")],
@@ -2293,6 +2562,7 @@ class FinanceStore:
             "quick_templates": [dict(r) for r in self.conn.execute("SELECT * FROM quick_templates")],
             "accounts": [dict(r) for r in self.conn.execute("SELECT * FROM accounts")],
             "transfers": [dict(r) for r in self.conn.execute("SELECT * FROM transfers")],
+            "category_rules": [dict(r) for r in self.conn.execute("SELECT * FROM category_rules")],
             "settings": [dict(r) for r in self.conn.execute("SELECT * FROM settings")],
             "exported_at": datetime.datetime.now().isoformat(),
         }
@@ -2315,6 +2585,8 @@ class FinanceStore:
         # Konten/Umbuchungen nur ersetzen, wenn das Backup sie enthält (ältere nicht).
         if "accounts" in data:
             tables += ["accounts", "transfers"]
+        # Regeln verweisen auf Kategorie-IDs, die hier ersetzt werden.
+        tables.append("category_rules")
         for table in tables:
             c.execute(f"DELETE FROM {table}")
 
@@ -2340,6 +2612,7 @@ class FinanceStore:
         insert_all("settings", data.get("settings", []))
         insert_all("accounts", data.get("accounts", []))
         insert_all("transfers", data.get("transfers", []))
+        insert_all("category_rules", data.get("category_rules", []))
 
         c.execute("PRAGMA foreign_keys = ON")
         c.commit()

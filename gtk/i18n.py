@@ -484,7 +484,7 @@ EN = {
     'Offensiv':
         'Aggressive',
     'Plutos – Das Haushaltsbuch':
-        'Plutos – The Household Book',
+        'Plutos – the household budget book',
     'Praktisch, wenn du gerade erst anfängst, für etwas zu sparen, einen Notgroschen aufzubauen oder in ETFs zu investieren: so zählt dein tatsächlich vorhandenes Geld, nicht nur das, was du seit Nutzung von Plutos gebucht hast.':
         'Handy when you are just starting to save for something, build an emergency fund or invest in ETFs: this way your actual money counts, not just what you have booked since you started using Plutos.',
     'Priorität / Ziel':
@@ -1157,4 +1157,108 @@ EN = {
         'Source and target account must be different.',
     'Konto nicht gefunden.':
         'Account not found.',
+    'Cashflow-Vorschau':
+        'Cash flow forecast',
+    'Alltagsbuchungen schätzen':
+        'Estimate everyday bookings',
+    'PDF-Monatsbericht':
+        'PDF monthly report',
+    'Ein Monat auf ein bis zwei Seiten: Kennzahlen, Ausgaben nach Kategorie, Einnahmen, Budgets und die größten Ausgaben – zum Ablegen oder Ausdrucken.':
+        'One month on one or two pages: key figures, spending by category, income, budgets and the largest expenses – to file away or print.',
+    'Bericht als PDF speichern…':
+        'Save report as PDF…',
+    'PDF-Monatsbericht speichern':
+        'Save PDF monthly report',
+    'Als PDF…':
+        'As PDF…',
+    'Zeigt, wie sich dein Gesamtkontostand (alle Konten) bis zum Ende der nächsten Monate entwickeln könnte. Grundlage sind die bereits eingetragenen künftigen und wiederkehrenden Buchungen. Mit „Alltagsbuchungen schätzen“ kommt je Monat der Durchschnitt deiner nicht wiederkehrenden Einnahmen und Ausgaben der letzten bis zu drei Monate dazu – abzüglich dessen, was im Monat schon eingetragen ist. Angezeigt werden Monatsendstände – zwischendurch kann der Stand tiefer liegen (z. B. Miete vor Gehaltseingang). Das ist eine Hochrechnung, keine Vorhersage.':
+        'Shows how your total balance (all accounts) could develop by the end of the coming months. It is based on the future and recurring bookings already entered. With “Estimate everyday bookings”, each month also includes the average of your non-recurring income and expenses of the last up to three months – minus what is already entered for that month. Month-end balances are shown – in between, the balance can be lower (e.g. rent before salary arrives). This is an extrapolation, not a prediction.',
+    '<b>Streuung</b> – Schwankung (Volatilität):':
+        '<b>Spread</b> – fluctuation (volatility):',
+    '800 Zufallsverläufe mit der oben eingestellten Rendite und Schwankung. Das Band zeigt, in welchem Bereich 80 % der Verläufe landen (10 %–90 %), die Linie den Median. Breit gestreute Aktien-ETFs schwanken historisch grob um 15 % pro Jahr – das ist ein Rechenbeispiel, keine Prognose und keine Anlageempfehlung. Die Steuer wird in dieser Grafik vereinfacht am Laufzeitende angesetzt.':
+        '800 random paths using the return set above and the fluctuation. The band shows the range in which 80 % of the paths end up (10 %–90 %), the line is the median. Broadly diversified equity ETFs have historically fluctuated by roughly 15 % per year – this is a calculation example, not a forecast and not investment advice. In this chart, tax is applied in a simplified way at the end of the term.',
+    'Noch keine Buchungen vorhanden.':
+        'No bookings yet.',
+    'Erst oben einen Kontostand hinterlegen – dann erscheint hier die Vorschau.':
+        'Set a balance above first – the forecast will then appear here.',
+    'Gesamtkontostand':
+        'Total balance',
+    'Kontostand heute {0} → Ende {1}: {2}.':
+        'Balance today {0} → end of {1}: {2}.',
+    'Keine Vormonate mit Buchungen – es zählen nur eingetragene und wiederkehrende Buchungen.':
+        'No previous months with bookings – only entered and recurring bookings count.',
+    'Median':
+        'Median',
+    'mittlere 80 % der Verläufe':
+        'middle 80 % of paths',
+    'Nach {0} Jahren (vor Steuern): Median {1}; in 10 % der Verläufe weniger als {2}, in 10 % mehr als {3}.\nNach Steuern in heutiger Kaufkraft: Median {4} (unten {5}, oben {6}). In {7:.0f} % der Verläufe liegt der Endwert unter den Einzahlungen.':
+        "After {0} years (before tax): median {1}; in 10 % of paths less than {2}, in 10 % more than {3}.\nAfter tax in today's purchasing power: median {4} (low {5}, high {6}). In {7:.0f} % of paths the final value is below the amount paid in.",
+    '{0} Monate':
+        '{0} months',
+    'Achtung: Zum Ende {0} liegt das Konto voraussichtlich im Minus (tiefster Monatsendstand {1}).':
+        'Warning: at the end of {0} the account is expected to be overdrawn (lowest month-end balance {1}).',
+    'Tiefster erwarteter Stand zum Monatsende: {0} ({1}).':
+        'Lowest expected balance at month end: {0} ({1}).',
+    'Bericht gespeichert: {0}':
+        'Report saved: {0}',
+    'Geschätzt: im Schnitt {0} Einnahmen und {1} Ausgaben pro Monat außerhalb wiederkehrender Buchungen (Ø der letzten {2} Monate).':
+        'Estimated: on average {0} income and {1} expenses per month outside recurring bookings (average of the last {2} months).',
+    'Regeln…':
+        'Rules…',
+    'Stichwörter, die Buchungen automatisch einer Kategorie zuordnen':
+        'Keywords that automatically assign bookings to a category',
+    'z. B. rewe (Groß-/Kleinschreibung egal)':
+        'e.g. rewe (case does not matter)',
+    'Enthält die Beschreibung einer Buchung das Stichwort, wird diese Kategorie vorgeschlagen.':
+        "If a booking's description contains the keyword, this category is suggested.",
+    'Kategorie-Regeln':
+        'Category rules',
+    'Regeln ordnen Buchungen anhand eines Stichworts in der Beschreibung automatisch einer Kategorie zu – beim Eintippen, im Sync-Ordner (Kategorie leer lassen) und überall, wo keine Kategorie angegeben ist. Bei mehreren Treffern gewinnt das längste Stichwort.':
+        'Rules automatically assign bookings to a category based on a keyword in the description – while typing, in the sync folder (leave the category empty) and wherever no category is given. If several rules match, the longest keyword wins.',
+    'Beschreibung eintippen …':
+        'Type a description …',
+    'Regel bearbeiten':
+        'Edit rule',
+    'Regel hinzufügen':
+        'Add rule',
+    'Stichwort:':
+        'Keyword:',
+    'Stichwort':
+        'Keyword',
+    'Ausprobieren:':
+        'Try it out:',
+    'Kategorie nach Regel vorgeschlagen: {0} {1}':
+        'Category suggested by rule: {0} {1}',
+    '→ keine Regel passt':
+        '→ no rule matches',
+    'Plutos – Monatsbericht':
+        'Plutos – monthly report',
+    'Gespart':
+        'Saved',
+    'Sparquote':
+        'Savings rate',
+    'Ausgaben nach Kategorie':
+        'Spending by category',
+    'Einnahmen nach Kategorie':
+        'Income by category',
+    'Größte Ausgaben':
+        'Largest expenses',
+    'Erstellt am {0}':
+        'Created on {0}',
+    '{0} Buchungen in diesem Monat.':
+        '{0} bookings this month.',
+    'Ausgaben {0:+.0f} % gegenüber dem Vormonat ({1}).':
+        'Spending {0:+.0f} % compared with the previous month ({1}).',
+    'Gesamtkontostand am Monatsende: {0}.':
+        'Total balance at month end: {0}.',
+    'Weitere Kategorien':
+        'Other categories',
+    '{0} von {1} Budgets eingehalten.':
+        '{0} of {1} budgets met.',
+    'Stichwort fehlt':
+        'Keyword missing',
+    'Kategorie unbekannt':
+        'Unknown category',
+    'Für dieses Stichwort gibt es schon eine Regel':
+        'There is already a rule for this keyword',
 }

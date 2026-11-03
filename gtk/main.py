@@ -46,6 +46,7 @@ import threading
 from db import FinanceStore, add_months, DATA_DIR, year_summary_lines
 import sync_tools
 import update_check
+import report_pdf
 from version import APP_VERSION
 import theme
 from theme import make_card, make_link_button, ProgressRow, PaceBar, MiniTrend, NavIcon
@@ -111,6 +112,115 @@ def _widget_fg_color(widget):
     ctx = widget.get_style_context()
     color = ctx.get_color(Gtk.StateFlags.NORMAL)
     return (color.red, color.green, color.blue)
+
+
+def _short_amount(value):
+    """Betrag ohne Nachkommastellen für Achsenbeschriftungen („12.345 €“)."""
+    return f"{value:,.0f} €".replace(",", ".")
+
+
+def _draw_band_chart(widget, cr, labels, series, band=None, zero_line=False, empty_text=""):
+    """Liniendiagramm mit optionalem Streuband (Cashflow-Vorschau und
+    Monte-Carlo-Korridor). series: dicts mit name, color (r, g, b), values,
+    optional dashed; band: dict mit name, color, low, high."""
+    width = widget.get_allocated_width()
+    height = widget.get_allocated_height()
+    fg = _widget_fg_color(widget)
+    cr.select_font_face("Sans", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL)
+    cr.set_font_size(11)
+    n = len(labels)
+    if n == 0 or not series:
+        cr.set_source_rgba(*fg, 0.7)
+        cr.move_to(20, height / 2)
+        cr.show_text(empty_text)
+        return False
+    left, right, top, bottom = 84, 34, 30, 28
+    plot_w = max(10, width - left - right)
+    plot_h = max(10, height - top - bottom)
+
+    values = [v for s in series for v in s["values"]]
+    if band:
+        values += list(band["low"]) + list(band["high"])
+    lo, hi = min(values), max(values)
+    if hi - lo < 1e-9:
+        lo, hi = lo - 1, hi + 1
+    pad = (hi - lo) * 0.06
+    if lo >= 0 and lo < 0.4 * hi:
+        lo, hi = 0.0, hi + pad
+    else:
+        lo, hi = lo - pad, hi + pad
+
+    def px(i):
+        return left + (plot_w / 2 if n == 1 else i / (n - 1) * plot_w)
+
+    def py(v):
+        return top + (hi - v) / (hi - lo) * plot_h
+
+    cr.set_line_width(1)
+    for k in range(5):
+        value = lo + (hi - lo) * k / 4
+        y = py(value)
+        cr.set_source_rgba(*fg, 0.16)
+        cr.move_to(left, y)
+        cr.line_to(left + plot_w, y)
+        cr.stroke()
+        text = _short_amount(value)
+        cr.set_source_rgba(*fg, 0.75)
+        cr.move_to(left - 8 - cr.text_extents(text).x_advance, y + 4)
+        cr.show_text(text)
+    if zero_line and lo < 0 < hi:
+        cr.set_source_rgba(0.75, 0.22, 0.15, 0.7)
+        cr.set_dash([6, 4])
+        cr.move_to(left, py(0))
+        cr.line_to(left + plot_w, py(0))
+        cr.stroke()
+        cr.set_dash([])
+
+    step = max(1, math.ceil(n / 8))
+    cr.set_source_rgba(*fg, 0.75)
+    for i in range(0, n, step):
+        text = str(labels[i])
+        cr.move_to(px(i) - cr.text_extents(text).x_advance / 2, height - bottom + 18)
+        cr.show_text(text)
+
+    if band and n > 1:
+        cr.set_source_rgba(*band["color"], 0.22)
+        cr.move_to(px(0), py(band["high"][0]))
+        for i in range(1, n):
+            cr.line_to(px(i), py(band["high"][i]))
+        for i in range(n - 1, -1, -1):
+            cr.line_to(px(i), py(band["low"][i]))
+        cr.close_path()
+        cr.fill()
+
+    for s in series:
+        cr.set_source_rgb(*s["color"])
+        cr.set_line_width(2.2)
+        cr.set_dash([6, 4] if s.get("dashed") else [])
+        if n == 1:
+            cr.arc(px(0), py(s["values"][0]), 3, 0, 2 * math.pi)
+            cr.fill()
+            continue
+        for i, v in enumerate(s["values"]):
+            if i == 0:
+                cr.move_to(px(i), py(v))
+            else:
+                cr.line_to(px(i), py(v))
+        cr.stroke()
+    cr.set_dash([])
+
+    x = left
+    legend = ([(band["name"], band["color"], True)] if band else []) + \
+             [(s["name"], s["color"], False) for s in series]
+    for name, color, is_band in legend:
+        cr.set_source_rgba(*color, 0.45 if is_band else 1.0)
+        cr.rectangle(x, 10, 12, 8)
+        cr.fill()
+        cr.set_source_rgba(*fg, 0.9)
+        cr.move_to(x + 17, 18)
+        cr.show_text(name)
+        x += 17 + cr.text_extents(name).x_advance + 16
+    return False
 
 
 def _help_button(explanation):
@@ -307,8 +417,13 @@ class MainWindow(Gtk.Window):
             self._refresh_dashboard()
 
     def _on_page_changed(self, stack, _param):
-        if stack.get_visible_child_name() == "overview":
+        name = stack.get_visible_child_name()
+        if name == "overview":
             self._refresh_dashboard()
+        elif name == "planning":
+            self._refresh_current_balance_display()       # inkl. Cashflow-Vorschau
+        elif name == "export":
+            self._refresh_report_months()
 
     def _build_dashboard_tab(self):
         self.dashboard_scroll = Gtk.ScrolledWindow()
@@ -344,6 +459,7 @@ class MainWindow(Gtk.Window):
         row.pack_start(theme.make_label(
             tr('Monatsabschluss {0}').format(f"{months()[mon - 1]} {year}"), "card-title"), True, True, 0)
         row.pack_end(make_link_button(tr('Ausblenden'), lambda: self._dismiss_month_summary(sm["month"])), False, False, 0)
+        row.pack_end(make_link_button(tr('Als PDF…'), lambda: self._on_export_month_pdf(sm["month"])), False, False, 0)
         row.pack_end(make_link_button(tr('Auswertungen'), lambda: self._go_to("stats")), False, False, 0)
         lay.pack_start(row, False, False, 0)
 
@@ -3436,6 +3552,38 @@ class MainWindow(Gtk.Window):
         balance_hint.set_line_wrap(True)
         balance_grid.attach(balance_hint, 0, 6, 3, 1)
 
+        # -- Abschnitt: Cashflow-Vorschau --
+        cf_frame = Gtk.Frame(label=tr('Cashflow-Vorschau'))
+        box.pack_start(cf_frame, False, False, 0)
+        cf_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        cf_box.set_border_width(8)
+        cf_frame.add(cf_box)
+        cf_controls = Gtk.Box(spacing=8)
+        cf_box.pack_start(cf_controls, False, False, 0)
+        cf_controls.pack_start(Gtk.Label(label=tr('Zeitraum:')), False, False, 0)
+        self.cashflow_months_combo = Gtk.ComboBoxText()
+        for n in (3, 6, 12):
+            self.cashflow_months_combo.append(str(n), tr('{0} Monate').format(n))
+        self.cashflow_months_combo.set_active_id("6")
+        cf_controls.pack_start(self.cashflow_months_combo, False, False, 0)
+        self.cashflow_estimate_check = Gtk.CheckButton(label=tr('Alltagsbuchungen schätzen'))
+        self.cashflow_estimate_check.set_active(True)
+        cf_controls.pack_start(self.cashflow_estimate_check, False, False, 0)
+        cf_controls.pack_start(_help_button(
+            tr('Zeigt, wie sich dein Gesamtkontostand (alle Konten) bis zum Ende der nächsten Monate entwickeln könnte. Grundlage sind die bereits eingetragenen künftigen und wiederkehrenden Buchungen. Mit „Alltagsbuchungen schätzen“ kommt je Monat der Durchschnitt deiner nicht wiederkehrenden Einnahmen und Ausgaben der letzten bis zu drei Monate dazu – abzüglich dessen, was im Monat schon eingetragen ist. Angezeigt werden Monatsendstände – zwischendurch kann der Stand tiefer liegen (z. B. Miete vor Gehaltseingang). Das ist eine Hochrechnung, keine Vorhersage.')),
+            False, False, 0)
+        self.cashflow_area = Gtk.DrawingArea()
+        self.cashflow_area.set_size_request(-1, 250)
+        self.cashflow_area.connect("draw", self._on_draw_cashflow)
+        cf_box.pack_start(self.cashflow_area, False, False, 0)
+        self.cashflow_label = Gtk.Label(xalign=0)
+        self.cashflow_label.set_line_wrap(True)
+        self.cashflow_label.set_selectable(False)
+        cf_box.pack_start(self.cashflow_label, False, False, 0)
+        self._cashflow_view = ([], [], "")
+        self.cashflow_months_combo.connect("changed", self._refresh_cashflow)
+        self.cashflow_estimate_check.connect("toggled", self._refresh_cashflow)
+
         # -- Abschnitt A: Notgroschen einrichten --
         ng_frame = Gtk.Frame(label=tr('Notgroschen einrichten (3–6 Monate Fixkosten)'))
         box.pack_start(ng_frame, False, False, 0)
@@ -3644,6 +3792,53 @@ class MainWindow(Gtk.Window):
                 self.current_balance_label.set_markup(
                     tr('Aktueller Kontostand (berechnet): <b>{0}</b>').format(fmt_amount(balance))
                 )
+        self._refresh_cashflow()
+
+    def _refresh_cashflow(self, *_args):
+        if not hasattr(self, "cashflow_area"):
+            return
+        fc = self.store.cashflow_forecast(int(self.cashflow_months_combo.get_active_id() or 6),
+                                          include_estimate=self.cashflow_estimate_check.get_active())
+        if fc is None:
+            self._cashflow_view = ([], [], tr('Erst oben einen Kontostand hinterlegen – dann erscheint hier die Vorschau.'))
+            self.cashflow_label.set_text("")
+            self.cashflow_area.queue_draw()
+            return
+        names = months_short()
+        month_names = months()
+
+        def short(month):
+            return f"{names[int(month[5:7]) - 1]} {month[2:4]}"
+
+        def long_label(month):
+            return f"{month_names[int(month[5:7]) - 1]} {month[:4]}"
+
+        pts = fc["months"]
+        labels = [tr('Heute')] + [short(m["month"]) for m in pts]
+        values = [fc["start_balance"]] + [m["balance"] for m in pts]
+        self._cashflow_view = (labels, [{"name": tr('Gesamtkontostand'), "color": (0.2, 0.47, 0.75),
+                                         "values": values}], "")
+        end = pts[-1]
+        lines = [tr('Kontostand heute {0} → Ende {1}: {2}.').format(
+            fmt_amount(fc["start_balance"]), long_label(end["month"]), fmt_amount(end["balance"]))]
+        if fc["first_negative"]:
+            lines.append(tr('Achtung: Zum Ende {0} liegt das Konto voraussichtlich im Minus (tiefster Monatsendstand {1}).').format(
+                long_label(fc["first_negative"]), fmt_amount(fc["lowest"]["balance"])))
+        else:
+            lines.append(tr('Tiefster erwarteter Stand zum Monatsende: {0} ({1}).').format(
+                fmt_amount(fc["lowest"]["balance"]), long_label(fc["lowest"]["month"])))
+        if fc["include_estimate"]:
+            if fc["months_used"]:
+                lines.append(tr('Geschätzt: im Schnitt {0} Einnahmen und {1} Ausgaben pro Monat außerhalb wiederkehrender Buchungen (Ø der letzten {2} Monate).').format(
+                    fmt_amount(fc["avg_in"]), fmt_amount(fc["avg_out"]), fc["months_used"]))
+            else:
+                lines.append(tr('Keine Vormonate mit Buchungen – es zählen nur eingetragene und wiederkehrende Buchungen.'))
+        self.cashflow_label.set_text("\n".join(lines))
+        self.cashflow_area.queue_draw()
+
+    def _on_draw_cashflow(self, widget, cr):
+        labels, series, empty = self._cashflow_view
+        return _draw_band_chart(widget, cr, labels, series, zero_line=True, empty_text=empty)
 
     def _on_manage_accounts(self, widget):
         dialog = AccountsDialog(self, self.store)
@@ -4036,6 +4231,28 @@ class MainWindow(Gtk.Window):
             self.etf_scenario_view.append_column(column)
         box.pack_start(self.etf_scenario_view, False, False, 0)
 
+        mc_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        box.pack_start(mc_box, False, False, 0)
+        mc_label = Gtk.Label()
+        mc_label.set_markup(tr('<b>Streuung</b> – Schwankung (Volatilität):'))
+        mc_box.pack_start(mc_label, False, False, 0)
+        self.etf_vol_spin = Gtk.SpinButton(
+            adjustment=Gtk.Adjustment(value=15.0, lower=0, upper=60, step_increment=0.5, page_increment=5),
+            digits=1, numeric=True)
+        mc_box.pack_start(self.etf_vol_spin, False, False, 0)
+        mc_box.pack_start(Gtk.Label(label=tr('% p.a.')), False, False, 0)
+        mc_box.pack_start(_help_button(
+            tr('800 Zufallsverläufe mit der oben eingestellten Rendite und Schwankung. Das Band zeigt, in welchem Bereich 80 % der Verläufe landen (10 %–90 %), die Linie den Median. Breit gestreute Aktien-ETFs schwanken historisch grob um 15 % pro Jahr – das ist ein Rechenbeispiel, keine Prognose und keine Anlageempfehlung. Die Steuer wird in dieser Grafik vereinfacht am Laufzeitende angesetzt.')),
+            False, False, 0)
+        self.etf_mc_area = Gtk.DrawingArea()
+        self.etf_mc_area.set_size_request(-1, 260)
+        self.etf_mc_area.connect("draw", self._on_draw_etf_mc)
+        box.pack_start(self.etf_mc_area, False, False, 0)
+        self.etf_mc_label = Gtk.Label(xalign=0)
+        self.etf_mc_label.set_line_wrap(True)
+        box.pack_start(self.etf_mc_label, False, False, 0)
+        self._etf_mc_view = None
+
         self.etf_result_store = Gtk.ListStore(int, str, str, str, str)
         # jahr, sparrate, eingezahlt, wert, gewinn
         self.etf_result_view = Gtk.TreeView(model=self.etf_result_store)
@@ -4078,7 +4295,8 @@ class MainWindow(Gtk.Window):
         for spin in (self.etf_amount_spin, self.etf_return_spin, self.etf_years_spin,
                      self.etf_increase_spin, self.etf_cap_spin, self.etf_basiszins_spin,
                      self.etf_teilfreistellung_spin, self.etf_kest_spin, self.etf_soli_spin,
-                     self.etf_pauschbetrag_spin, self.etf_spread_spin, self.etf_inflation_spin):
+                     self.etf_pauschbetrag_spin, self.etf_spread_spin, self.etf_inflation_spin,
+                     self.etf_vol_spin):
             spin.connect("value-changed", self._refresh_etf_scenarios)
         self.etf_vorab_check.connect("toggled", self._refresh_etf_scenarios)
         self._refresh_etf_scenarios()
@@ -4108,6 +4326,42 @@ class MainWindow(Gtk.Window):
                 sc["label"], f"{sc['annual_return']:.2f} %", fmt_amount(sc["value"]),
                 fmt_amount(sc["value_after_tax"]), fmt_amount(sc["real_value_after_tax"]),
             ])
+        self._refresh_etf_monte_carlo(cap)
+
+    def _refresh_etf_monte_carlo(self, cap):
+        if not hasattr(self, "etf_mc_area"):
+            return
+        mc = FinanceStore.etf_monte_carlo(
+            self.etf_amount_spin.get_value(), self.etf_return_spin.get_value(),
+            self.etf_vol_spin.get_value(), int(self.etf_years_spin.get_value()),
+            annual_increase_percent=self.etf_increase_spin.get_value(),
+            max_monthly_amount=cap if cap > 0 else None,
+            inflation_percent=self.etf_inflation_spin.get_value(),
+            teilfreistellung_percent=self.etf_teilfreistellung_spin.get_value(),
+            kapitalertragsteuer_percent=self.etf_kest_spin.get_value(),
+            soli_percent=self.etf_soli_spin.get_value(),
+            sparerpauschbetrag=self.etf_pauschbetrag_spin.get_value())
+        blue = (0.2, 0.47, 0.75)
+        self._etf_mc_view = (
+            [tr('J{0}').format(y) for y in mc["years"]],
+            [{"name": tr('Median'), "color": blue, "values": mc["p50"]},
+             {"name": tr('Eingezahlt'), "color": (0.47, 0.53, 0.59), "values": mc["invested"],
+              "dashed": True}],
+            {"name": tr('mittlere 80 % der Verläufe'), "color": blue,
+             "low": mc["p10"], "high": mc["p90"]})
+        f = mc["final"]
+        self.etf_mc_label.set_text(tr('Nach {0} Jahren (vor Steuern): Median {1}; in 10 % der Verläufe weniger als {2}, in 10 % mehr als {3}.\nNach Steuern in heutiger Kaufkraft: Median {4} (unten {5}, oben {6}). In {7:.0f} % der Verläufe liegt der Endwert unter den Einzahlungen.').format(
+            mc["years"][-1], fmt_amount(f["p50"]["value"]), fmt_amount(f["p10"]["value"]),
+            fmt_amount(f["p90"]["value"]), fmt_amount(f["p50"]["real_value_after_tax"]),
+            fmt_amount(f["p10"]["real_value_after_tax"]), fmt_amount(f["p90"]["real_value_after_tax"]),
+            mc["loss_probability"] * 100))
+        self.etf_mc_area.queue_draw()
+
+    def _on_draw_etf_mc(self, widget, cr):
+        if not self._etf_mc_view:
+            return False
+        labels, series, band = self._etf_mc_view
+        return _draw_band_chart(widget, cr, labels, series, band=band)
 
     def _on_vorab_toggled(self, widget):
         self.etf_basiszins_spin.set_sensitive(widget.get_active())
@@ -5779,6 +6033,17 @@ class MainWindow(Gtk.Window):
         text(box, tr("CSV-Import: Buchungen aus einer anderen Haushaltsbuch- oder Banking-Software übernehmen. Trennzeichen (';' oder ',') sowie deutsche/englische Zahlen- und Datumsformate werden automatisch erkannt. Erwartet werden Spalten für Datum und Betrag (z. B. 'Datum'/'Date', 'Betrag'/'Amount'); Kategorie, Art und Beschreibung sind optional – unbekannte Kategorien werden automatisch angelegt."))
         button(box, tr('Buchungen aus CSV importieren…'), self._on_import_csv)
 
+        box = section(tr('PDF-Monatsbericht'))
+        text(box, tr('Ein Monat auf ein bis zwei Seiten: Kennzahlen, Ausgaben nach Kategorie, Einnahmen, Budgets und die größten Ausgaben – zum Ablegen oder Ausdrucken.'))
+        pdf_row = Gtk.Box(spacing=8)
+        self.report_month_combo = Gtk.ComboBoxText()
+        self._refresh_report_months()
+        pdf_row.pack_start(self.report_month_combo, False, False, 0)
+        pdf_btn = Gtk.Button(label=tr('Bericht als PDF speichern…'))
+        pdf_btn.connect("clicked", self._on_export_month_pdf_clicked)
+        pdf_row.pack_start(pdf_btn, False, False, 0)
+        box.pack_start(pdf_row, False, False, 0)
+
         box = section(tr('Sicherung'))
         text(box, tr('Vollständiges Backup (JSON) – enthält alle Buchungen, Vorlagen, Budgets, Sparziele, ETF-Pläne und Kategorien (inkl. Icons). Zum Sichern oder Übertragen auf einen anderen Rechner mit diesem Programm.'))
         row = Gtk.Box(spacing=8)
@@ -6086,6 +6351,50 @@ class MainWindow(Gtk.Window):
         self._after_transactions_changed()
         self._refresh_stats()
 
+    def _refresh_report_months(self):
+        if not hasattr(self, "report_month_combo"):
+            return
+        previous = self.report_month_combo.get_active_id()
+        self.report_month_combo.remove_all()
+        names = months()
+        for m in self.store.list_months_with_transactions():
+            self.report_month_combo.append(m, f"{names[int(m[5:7]) - 1]} {m[:4]}")
+        if not (previous and self.report_month_combo.set_active_id(previous)):
+            self.report_month_combo.set_active(0)
+
+    def _on_export_month_pdf_clicked(self, widget):
+        self._on_export_month_pdf(self.report_month_combo.get_active_id())
+
+    def _on_export_month_pdf(self, month):
+        if not month:
+            _run_message_dialog(self, Gtk.MessageType.INFO, Gtk.ButtonsType.OK,
+                                tr('Noch keine Buchungen vorhanden.'))
+            return
+        dialog = Gtk.FileChooserDialog(
+            title=tr('PDF-Monatsbericht speichern'), parent=self,
+            action=Gtk.FileChooserAction.SAVE,
+        )
+        dialog.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+                            Gtk.STOCK_SAVE, Gtk.ResponseType.OK)
+        dialog.set_current_name(f"plutos-bericht-{month}.pdf")
+        dialog.set_do_overwrite_confirmation(True)
+        path = dialog.get_filename() if dialog.run() == Gtk.ResponseType.OK else None
+        dialog.destroy()
+        if not path:
+            return
+        try:
+            report_pdf.build_month_report(self.store.month_report_data(month), path, tr,
+                                          fmt_amount, months())
+        except OSError as exc:
+            _run_message_dialog(self, Gtk.MessageType.WARNING, Gtk.ButtonsType.OK, str(exc))
+            return
+        if hasattr(self, "export_status_label"):
+            self.export_status_label.set_text(tr('Bericht gespeichert: {0}').format(path))
+        try:
+            Gtk.show_uri_on_window(self, GLib.filename_to_uri(path, None), Gdk.CURRENT_TIME)
+        except GLib.Error:
+            pass
+
     def _on_export_json(self, widget):
         dialog = Gtk.FileChooserDialog(
             title=tr('Backup als JSON exportieren'), parent=self,
@@ -6174,6 +6483,7 @@ class TransactionDialog(FormDialog):
         self.existing = existing
         grid = self.grid
 
+        self._internal = False          # True, solange das Programm (nicht der Nutzer) Felder ändert
         grid.attach(Gtk.Label(label=tr('Art:'), xalign=0), 0, 0, 1, 1)
         self.kind_combo = Gtk.ComboBoxText()
         self.kind_combo.append("ausgabe", tr('Ausgabe'))
@@ -6208,6 +6518,12 @@ class TransactionDialog(FormDialog):
         grid.attach(Gtk.Label(label=tr('Beschreibung:'), xalign=0), 0, 4, 1, 1)
         self.description_entry = Gtk.Entry(text=existing["description"] if existing else "")
         grid.attach(self.description_entry, 1, 4, 1, 1)
+        # Kategorie-Regeln: beim Tippen der Beschreibung die Kategorie vorschlagen,
+        # solange Art/Kategorie nicht selbst geändert wurden (nur bei neuen Buchungen).
+        self._category_touched = bool(existing)
+        self.kind_combo.connect("changed", self._on_combo_touched)
+        self.category_combo.connect("changed", self._on_combo_touched)
+        self.description_entry.connect("changed", self._on_description_changed)
 
         grid.attach(Gtk.Label(label=tr('Tags:'), xalign=0), 0, 5, 1, 1)
         self.tags_entry = Gtk.Entry(
@@ -6252,7 +6568,35 @@ class TransactionDialog(FormDialog):
                 note.set_line_wrap(True)
                 grid.attach(note, 0, 7, 2, 1)
 
+        self.rule_hint = Gtk.Label(xalign=0)
+        self.rule_hint.get_style_context().add_class("dim-label")
+        self.rule_hint.set_no_show_all(True)
+        grid.attach(self.rule_hint, 0, 9, 2, 1)
+
         self.show_all()
+
+    def _on_combo_touched(self, widget):
+        if not self._internal:
+            self._category_touched = True
+            self.rule_hint.hide()
+
+    def _on_description_changed(self, entry):
+        if self._category_touched:
+            return
+        cat = self.store.suggest_category(entry.get_text())
+        if cat is None:
+            self.rule_hint.hide()
+            return
+        self._internal = True
+        try:
+            if self.kind_combo.get_active_id() != cat["kind"]:
+                self.kind_combo.set_active_id(cat["kind"])        # lädt die Kategorien neu
+            self.category_combo.set_active_id(str(cat["id"]))
+        finally:
+            self._internal = False
+        self.rule_hint.set_text(tr('Kategorie nach Regel vorgeschlagen: {0} {1}').format(
+            cat["icon"], cat["name"]))
+        self.rule_hint.show()
 
     def find_similar(self):
         """Bereits vorhandene Buchungen am selben Tag mit demselben Betrag (mögliche
@@ -6271,13 +6615,18 @@ class TransactionDialog(FormDialog):
 
     def _reload_categories(self, preselect=None):
         kind = self.kind_combo.get_active_id()
-        self.category_combo.remove_all()
-        active_index = 0
-        for i, cat in enumerate(self.store.list_categories(kind=kind)):
-            self.category_combo.append(str(cat["id"]), f"{cat['icon']} {cat['name']}")
-            if preselect and cat["id"] == preselect:
-                active_index = i
-        self.category_combo.set_active(active_index)
+        previous = self._internal
+        self._internal = True           # Neuaufbau der Liste zählt nicht als Nutzerwahl
+        try:
+            self.category_combo.remove_all()
+            active_index = 0
+            for i, cat in enumerate(self.store.list_categories(kind=kind)):
+                self.category_combo.append(str(cat["id"]), f"{cat['icon']} {cat['name']}")
+                if preselect and cat["id"] == preselect:
+                    active_index = i
+            self.category_combo.set_active(active_index)
+        finally:
+            self._internal = previous
 
     def _on_recurring_toggled(self, widget):
         self.frequency_combo.set_sensitive(widget.get_active())
@@ -6732,8 +7081,18 @@ class CategoryManagerDialog(Gtk.Dialog):
         del_btn.connect("clicked", self._on_delete)
         btn_box.pack_start(del_btn, False, False, 0)
 
+        rules_btn = Gtk.Button(label=tr('Regeln…'))
+        rules_btn.set_tooltip_text(tr('Stichwörter, die Buchungen automatisch einer Kategorie zuordnen'))
+        rules_btn.connect("clicked", self._on_rules)
+        btn_box.pack_start(rules_btn, False, False, 0)
+
         self._refresh()
         self.show_all()
+
+    def _on_rules(self, widget):
+        dialog = CategoryRulesDialog(self, self.store)
+        dialog.run()
+        dialog.destroy()
 
     def _refresh(self):
         self.list_store.clear()
@@ -6784,6 +7143,147 @@ class CategoryManagerDialog(Gtk.Dialog):
         )
         if response == Gtk.ResponseType.OK:
             self.store.delete_category(category_id)
+            self._refresh()
+
+
+class RuleEditDialog(FormDialog):
+    """Stichwort + Kategorie für eine Kategorie-Regel."""
+
+    def __init__(self, parent, store: FinanceStore, keyword="", category_id=None):
+        super().__init__(parent, tr('Regel bearbeiten') if keyword else tr('Regel hinzufügen'))
+        self.set_default_size(400, 200)
+        grid = self.grid
+        grid.attach(Gtk.Label(label=tr('Stichwort:'), xalign=0), 0, 0, 1, 1)
+        self.keyword_entry = Gtk.Entry(text=keyword)
+        self.keyword_entry.set_hexpand(True)
+        self.keyword_entry.set_placeholder_text(tr('z. B. rewe (Groß-/Kleinschreibung egal)'))
+        grid.attach(self.keyword_entry, 1, 0, 1, 1)
+        grid.attach(Gtk.Label(label=tr('Kategorie:'), xalign=0), 0, 1, 1, 1)
+        self.category_combo = Gtk.ComboBoxText()
+        for cat in store.list_categories():
+            kind = tr('Einnahme') if cat["kind"] == "einnahme" else tr('Ausgabe')
+            self.category_combo.append(str(cat["id"]), f"{cat['icon']} {cat['name']} ({kind})")
+        if category_id is not None:
+            self.category_combo.set_active_id(str(category_id))
+        else:
+            self.category_combo.set_active(0)
+        grid.attach(self.category_combo, 1, 1, 1, 1)
+        note = Gtk.Label(
+            label=tr('Enthält die Beschreibung einer Buchung das Stichwort, wird diese Kategorie vorgeschlagen.'),
+            xalign=0)
+        note.set_line_wrap(True)
+        note.set_max_width_chars(40)
+        note.get_style_context().add_class("dim-label")
+        grid.attach(note, 0, 2, 2, 1)
+        self.show_all()
+
+    def get_data(self):
+        keyword = self.keyword_entry.get_text().strip()
+        cat_id = self.category_combo.get_active_id()
+        if not keyword or cat_id is None:
+            return None
+        return keyword, int(cat_id)
+
+
+class CategoryRulesDialog(Gtk.Dialog):
+    """Verwaltung der Kategorie-Regeln inkl. kleinem Ausprobier-Feld."""
+
+    def __init__(self, parent, store: FinanceStore):
+        super().__init__(title=tr('Kategorie-Regeln'), transient_for=parent, flags=0)
+        self.add_buttons(Gtk.STOCK_CLOSE, Gtk.ResponseType.CLOSE)
+        self.set_default_size(520, 460)
+        self.store = store
+        area = self.get_content_area()
+        area.set_border_width(10)
+        area.set_spacing(6)
+        intro = Gtk.Label(
+            label=tr('Regeln ordnen Buchungen anhand eines Stichworts in der Beschreibung automatisch einer Kategorie zu – beim Eintippen, im Sync-Ordner (Kategorie leer lassen) und überall, wo keine Kategorie angegeben ist. Bei mehreren Treffern gewinnt das längste Stichwort.'),
+            xalign=0)
+        intro.set_line_wrap(True)
+        intro.set_max_width_chars(60)
+        area.pack_start(intro, False, False, 0)
+
+        scroller = Gtk.ScrolledWindow()
+        area.pack_start(scroller, True, True, 0)
+        self.list_store = Gtk.ListStore(int, str, str, int)    # id, Stichwort, Kategorie, Kategorie-ID
+        self.tree_view = Gtk.TreeView(model=self.list_store)
+        for i, title in enumerate((tr('Stichwort'), tr('Kategorie'))):
+            column = Gtk.TreeViewColumn(title, Gtk.CellRendererText(), text=i + 1)
+            column.set_expand(True)
+            self.tree_view.append_column(column)
+        self.tree_view.connect("row-activated", lambda *a: self._on_edit(None))
+        scroller.add(self.tree_view)
+
+        btn_box = Gtk.Box(spacing=6)
+        area.pack_start(btn_box, False, False, 0)
+        for label, handler in ((tr('Hinzufügen'), self._on_add), (tr('Bearbeiten'), self._on_edit),
+                               (tr('Löschen'), self._on_delete)):
+            btn = Gtk.Button(label=label)
+            btn.connect("clicked", handler)
+            btn_box.pack_start(btn, False, False, 0)
+
+        test_row = Gtk.Box(spacing=6)
+        area.pack_start(test_row, False, False, 0)
+        test_row.pack_start(Gtk.Label(label=tr('Ausprobieren:')), False, False, 0)
+        self.test_entry = Gtk.Entry()
+        self.test_entry.set_placeholder_text(tr('Beschreibung eintippen …'))
+        self.test_entry.connect("changed", self._on_test)
+        test_row.pack_start(self.test_entry, True, True, 0)
+        self.test_result = Gtk.Label(label="")
+        test_row.pack_start(self.test_result, False, False, 0)
+
+        self._refresh()
+        self.show_all()
+
+    def _refresh(self):
+        self.list_store.clear()
+        for r in self.store.list_category_rules():
+            self.list_store.append([r["id"], r["keyword"],
+                                    f"{r['category_icon']} {r['category_name']}", r["category_id"]])
+        self._on_test(self.test_entry)
+
+    def _on_test(self, entry):
+        text = entry.get_text()
+        cat = self.store.suggest_category(text) if text.strip() else None
+        self.test_result.set_text(f"→ {cat['icon']} {cat['name']}" if cat else
+                                  (tr('→ keine Regel passt') if text.strip() else ""))
+
+    def _selected(self):
+        model, tree_iter = self.tree_view.get_selection().get_selected()
+        if tree_iter is None:
+            return None
+        return model[tree_iter][0], model[tree_iter][1], model[tree_iter][3]
+
+    def _run_edit(self, title, dialog, action):
+        while dialog.run() == Gtk.ResponseType.OK:
+            data = dialog.get_data()
+            if not data:
+                break
+            try:
+                action(*data)
+            except ValueError as exc:
+                _run_message_dialog(self, Gtk.MessageType.WARNING, Gtk.ButtonsType.OK, tr(str(exc)))
+                continue
+            break
+        dialog.destroy()
+        self._refresh()
+
+    def _on_add(self, widget):
+        self._run_edit(tr('Regel hinzufügen'), RuleEditDialog(self, self.store),
+                       self.store.add_category_rule)
+
+    def _on_edit(self, widget):
+        selected = self._selected()
+        if not selected:
+            return
+        rule_id, keyword, category_id = selected
+        self._run_edit(tr('Regel bearbeiten'), RuleEditDialog(self, self.store, keyword, category_id),
+                       lambda kw, cid: self.store.update_category_rule(rule_id, kw, cid))
+
+    def _on_delete(self, widget):
+        selected = self._selected()
+        if selected:
+            self.store.delete_category_rule(selected[0])
             self._refresh()
 
 

@@ -45,6 +45,7 @@ cp "$SCRIPT_DIR/db.py" "$APP_DIR/db.py"
 cp "$SCRIPT_DIR/i18n.py" "$APP_DIR/i18n.py"
 cp "$SCRIPT_DIR/sync_tools.py" "$APP_DIR/sync_tools.py"
 cp "$SCRIPT_DIR/update_check.py" "$APP_DIR/update_check.py"
+cp "$SCRIPT_DIR/report_pdf.py" "$APP_DIR/report_pdf.py"
 cp "$SCRIPT_DIR/version.py" "$APP_DIR/version.py"
 cp "$SCRIPT_DIR/theme.py" "$APP_DIR/theme.py"
 if [ -f "$SCRIPT_DIR/icon.svg" ]; then

@@ -8,10 +8,11 @@ Varianten optisch/inhaltlich gleich bleiben.
 """
 
 import datetime
+import math
 
 from PySide6.QtWidgets import QWidget, QSizePolicy
-from PySide6.QtGui import QPainter, QColor, QPen, QPainterPath
-from PySide6.QtCore import Qt, QRectF
+from PySide6.QtGui import QPainter, QColor, QPen, QPainterPath, QPolygonF
+from PySide6.QtCore import Qt, QRectF, QPointF
 
 from i18n import tr, months_short
 
@@ -34,6 +35,11 @@ def fmt_amount(value):
 
 def color_for_index(i):
     return CATEGORY_COLORS[i % len(CATEGORY_COLORS)]
+
+
+def fmt_short(value):
+    """Betrag ohne Nachkommastellen für Achsenbeschriftungen („12.345 €“)."""
+    return f"{value:,.0f} {CURRENCY}".replace(",", ".")
 
 
 class _BaseChart(QWidget):
@@ -597,6 +603,121 @@ class EtfComparisonWidget(_BaseChart):
             painter.drawText(int(legend_x + 20), int(legend_y + 20), fmt_amount(final_value))
             legend_y += 40
 
+
+
+class BandChartWidget(_BaseChart):
+    """Liniendiagramm mit optionalem Streuband (z. B. 10–90 %-Korridor) und
+    optionaler Nulllinie. Wird für die Cashflow-Vorschau und die
+    Monte-Carlo-Streuung der ETF-Simulation genutzt."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(250)
+        self.labels = []
+        self.series = []   # dicts: name, color (QColor), values, dashed (optional)
+        self.band = None   # dict: low, high, color, name
+        self.zero_line = False
+        self.empty_text = ""
+
+    def set_data(self, labels, series, band=None, zero_line=False, empty_text=""):
+        self.labels, self.series, self.band = labels, series, band
+        self.zero_line, self.empty_text = zero_line, empty_text
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        n = len(self.labels)
+        if n == 0 or not self.series:
+            self._draw_empty_message(painter, self.empty_text)
+            return
+        width, height = self.width(), self.height()
+        fg = self._fg_color()
+        left, right, top, bottom = 84, 34, 30, 28
+        plot_w = max(10, width - left - right)
+        plot_h = max(10, height - top - bottom)
+
+        values = [v for s in self.series for v in s["values"]]
+        if self.band:
+            values += list(self.band["low"]) + list(self.band["high"])
+        lo, hi = min(values), max(values)
+        if hi - lo < 1e-9:
+            lo, hi = lo - 1, hi + 1
+        pad = (hi - lo) * 0.06
+        if lo >= 0 and lo < 0.4 * hi:
+            lo, hi = 0.0, hi + pad          # nur positive Werte: Achse bei 0 beginnen
+        else:
+            lo, hi = lo - pad, hi + pad
+
+        def px(i):
+            return left + (plot_w / 2 if n == 1 else i / (n - 1) * plot_w)
+
+        def py(v):
+            return top + (hi - v) / (hi - lo) * plot_h
+
+        grid = QColor(fg.red(), fg.green(), fg.blue(), 40)
+        label_color = QColor(fg.red(), fg.green(), fg.blue(), 190)
+        for k in range(5):
+            value = lo + (hi - lo) * k / 4
+            y = py(value)
+            painter.setPen(QPen(grid, 1))
+            painter.drawLine(int(left), int(y), int(left + plot_w), int(y))
+            painter.setPen(label_color)
+            painter.drawText(QRectF(2, y - 9, left - 8, 18), Qt.AlignRight | Qt.AlignVCenter,
+                             fmt_short(value))
+        if self.zero_line and lo < 0 < hi:
+            painter.setPen(QPen(QColor(RED.red(), RED.green(), RED.blue(), 170), 1.4, Qt.DashLine))
+            painter.drawLine(int(left), int(py(0)), int(left + plot_w), int(py(0)))
+
+        step = max(1, math.ceil(n / 8))
+        painter.setPen(label_color)
+        for i in range(0, n, step):
+            painter.drawText(QRectF(px(i) - 30, height - bottom + 6, 60, 16), Qt.AlignCenter,
+                             str(self.labels[i]))
+
+        if self.band and n > 1:
+            poly = QPolygonF()
+            for i, v in enumerate(self.band["high"]):
+                poly.append(QPointF(px(i), py(v)))
+            for i in range(n - 1, -1, -1):
+                poly.append(QPointF(px(i), py(self.band["low"][i])))
+            fill = QColor(self.band["color"])
+            fill.setAlpha(55)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(fill)
+            painter.drawPolygon(poly)
+            painter.setBrush(Qt.NoBrush)
+
+        for s in self.series:
+            pen = QPen(s["color"], 2.2)
+            if s.get("dashed"):
+                pen.setStyle(Qt.DashLine)
+            painter.setPen(pen)
+            if n == 1:
+                painter.drawEllipse(QPointF(px(0), py(s["values"][0])), 3, 3)
+                continue
+            path = QPainterPath()
+            for i, v in enumerate(s["values"]):
+                if i == 0:
+                    path.moveTo(px(i), py(v))
+                else:
+                    path.lineTo(px(i), py(v))
+            painter.drawPath(path)
+
+        x = left
+        legend = ([(self.band["name"], self.band["color"], True)] if self.band else []) + \
+                 [(s["name"], s["color"], False) for s in self.series]
+        for name, color, is_band in legend:
+            painter.setPen(Qt.NoPen)
+            fill = QColor(color)
+            if is_band:
+                fill.setAlpha(110)
+            painter.setBrush(fill)
+            painter.drawRect(int(x), 10, 12, 8)
+            painter.setPen(QColor(fg.red(), fg.green(), fg.blue(), 230))
+            text_w = painter.fontMetrics().horizontalAdvance(name)
+            painter.drawText(int(x + 17), 18, name)
+            x += 17 + text_w + 16
 
 
 PREVIOUS_COLOR = QColor(120, 134, 150)

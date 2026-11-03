@@ -334,9 +334,15 @@ def _resolve_entry(store, entry, default_date):
         raise ValueError("Betrag fehlt")
     amount = parse_amount(entry["amount"])
     name = str(entry.get("category", "")).strip()
-    if not name:
-        raise ValueError("Kategorie fehlt")
     cats = store.conn.execute("SELECT id, name, kind FROM categories").fetchall()
+    if name.lower() in ("", "?", "auto"):
+        # Keine Kategorie angegeben: Kategorie-Regel anhand der Beschreibung
+        text = str(entry.get("description", "")).strip()
+        suggested = store.suggest_category(text)
+        if suggested is None:
+            raise ValueError("Kategorie fehlt und keine Regel passt" if not text else
+                             f"Kategorie fehlt und keine Regel passt zu „{text}“")
+        name = suggested["name"]
     match = next((c for c in cats if c["name"].strip().lower() == name.lower()), None)
     kind_hint = str(entry.get("kind", "")).strip().lower()
     if match is None:

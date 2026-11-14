@@ -82,6 +82,13 @@ Datenbank-Logik teilen:
 - **Cashflow-Vorschau** (Finanzplanung): voraussichtlicher Gesamtkontostand der nächsten
   3, 6 oder 12 Monate aus wiederkehrenden Buchungen plus geschätzten Alltagsbuchungen,
   mit Warnung vor einem Minus am Monatsende
+- **Zahltag** (Finanzplanung): Wer sein Gehalt z. B. zum 15. bekommt, sieht auf der
+  Übersicht „Bis zum nächsten Gehalt“ – Resttage, voraussichtlich Übriges, Tagesspielraum
+  und wie viel davon (nach einem einstellbaren Puffer) in den Notgroschen kann
+- **Auswertungszeitraum** (Finanzplanung → Zahltag): Standard ist der Kalendermonat.
+  Wer „Zahltag-Zyklus“ wählt, bekommt Ausgabentempo, Monatsabschluss, Budgets,
+  Auswertungen und PDF-Bericht von Zahltag zu Zahltag (z. B. 15.10.–14.11.).
+  Kalenderansicht, Jahresabschluss und Jahresvergleiche bleiben beim Kalender
 - **Streuung statt einer Linie** (ETF-Sparplan): Zufallsverläufe mit einstellbarer
   Schwankung zeigen als Band, in welchem Bereich 80 % der Ergebnisse landen
   (Rechenbeispiel, keine Prognose und keine Anlageempfehlung)

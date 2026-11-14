@@ -1262,3 +1262,45 @@ EN = {
     'Für dieses Stichwort gibt es schon eine Regel':
         'There is already a rule for this keyword',
 }
+
+EN.update({
+    'Bis zum nächsten Gehalt': 'Until the next salary',
+    'Einstellen': 'Set up',
+    'Zahltag': 'Payday',
+    'aus': 'off',
+    '. des Monats': '. of the month',
+    '. des Monats (0 = aus)': '. of the month (0 = off)',
+    'im Plan': 'on track',
+    'wird knapp': 'getting tight',
+    'Heute auf dem Konto': 'On the account today',
+    'Fest eingeplant bis dahin': 'Already planned until then',
+    'Voraussichtlich übrig': 'Expected to be left',
+    'Gehalt kommt am:': 'Salary arrives on the:',
+    'Puffer bis zum Gehalt:': 'Buffer until salary:',
+    'Mit Zahltag zeigt die Übersicht eine Karte „Bis zum nächsten Gehalt“: Resttage, was voraussichtlich bis dahin übrig bleibt (Konto minus bereits eingetragene Ausgaben minus geschätzte Alltagsausgaben der letzten 30 Tage) und wie viel davon in den Notgroschen kann. Der Puffer bleibt auf dem Konto. Künftige Einnahmen vor dem Zahltag werden nicht eingerechnet. 0 = aus. Das ist eine Hochrechnung, keine Vorhersage.':
+        'With a payday set, the overview shows an “Until the next salary” card: days left, what is expected to be left until then (balance minus bookings already entered minus estimated everyday spending based on the last 30 days) and how much of it can go into the emergency fund. The buffer stays on the account. Future income before the payday is not counted. 0 = off. This is an extrapolation, not a prediction.',
+    'Seit dem letzten Gehalt ausgegeben: {0} (Tag {1} von {2}).': 'Spent since the last salary: {0} (day {1} of {2}).',
+    '{0} Tage bis {1}': '{0} days until {1}',
+    '1 Tag bis {0}': '1 day until {0}',
+    'Alltag (geschätzt, Ø {0} pro Tag)': 'Everyday spending (estimated, avg. {0} per day)',
+    'Davon in den Notgroschen: {0} (nach {1} Puffer). Spielraum: {2} pro Tag.': 'Of which into the emergency fund: {0} (after a {1} buffer). Room to spend: {2} per day.',
+    'Bis zum Gehalt fehlen voraussichtlich {0} zum Puffer von {1}. Spielraum: {2} pro Tag.': 'Until payday you are expected to fall {0} short of the {1} buffer. Room to spend: {2} per day.',
+    'Der Zahltag muss zwischen 1 und 28 liegen': 'The payday must be between 1 and 28',
+})
+
+EN.update({
+    'Mit Zahltag zeigt die Übersicht eine Karte „Bis zum nächsten Gehalt“: Resttage, was voraussichtlich bis dahin übrig bleibt (Konto minus bereits eingetragene Ausgaben minus geschätzte Alltagsausgaben der letzten 30 Tage) und wie viel davon in den Notgroschen kann. Der Puffer bleibt auf dem Konto. Künftige Einnahmen vor dem Zahltag werden nicht eingerechnet. 0 = aus. Das ist eine Hochrechnung, keine Vorhersage. „Auswerten nach“ legt fest, ob Übersicht, Monatsabschluss, Budgets, Auswertungen und PDF-Bericht den Kalendermonat (Standard) oder den Zyklus von Zahltag zu Zahltag verwenden. Die Kalenderansicht, Jahresabschluss und Jahresvergleiche bleiben beim Kalender.':
+        'With a payday set, the overview shows an “Until the next salary” card: days left, what is expected to be left until then (balance minus bookings already entered minus estimated everyday spending based on the last 30 days) and how much of it can go into the emergency fund. The buffer stays on the account. Future income before the payday is not counted. 0 = off. This is an extrapolation, not a prediction. “Evaluate by” decides whether the overview, month summary, budgets, statistics and PDF report use the calendar month (default) or the cycle from payday to payday. The calendar view, year summary and year comparisons always stay calendar-based.',
+    'Auswerten nach:': 'Evaluate by:',
+    'Kalendermonat': 'Calendar month',
+    'Zahltag-Zyklus': 'Payday cycle',
+    'Saldo im Zyklus': 'Balance this cycle',
+    'Bis Zyklusende geplant: {0} Ausgaben': 'Planned until end of cycle: {0} expenses',
+    'Zeitraum von Zahltag zu Zahltag': 'Period from payday to payday',
+    'Unbekannter Zeitraum-Modus': 'Unknown period mode',
+})
+
+EN.update({
+    'Tag {0} von {1}: {2} % des Zyklus sind vorbei, {3} % {4} ausgegeben.': 'Day {0} of {1}: {2} % of the cycle is over, {3} % {4} spent.',
+    'Budgets im Zyklus': 'Budgets this cycle',
+})

@@ -249,3 +249,127 @@ def test_delete_category_removes_its_rules(store):
     store.delete_category(food)
     assert store.list_category_rules() == []
     assert store.conn.execute("SELECT COUNT(*) FROM category_rules").fetchone()[0] == 0
+
+
+# -- Zahltag ------------------------------------------------------------------------
+
+def _payday_setup(store):
+    store.set_starting_balance(1000.0, "2026-01-01")
+    rent = _cat(store, "Miete")
+    pay = _cat(store, "Gehalt", "einnahme")
+    food = _cat(store, "Essen")
+    store.add_transaction("2026-10-22", -150.0, food, "Alltag")      # genau 30 Tage vor dem 20.11.
+    store.add_transaction("2026-11-10", -150.0, food, "Alltag")
+    store.add_transaction("2026-11-15", 2000.0, pay, "Gehalt")
+    store.add_recurring_template(rent, -500.0, "Miete", "monatlich", "2026-12-01")
+    store.add_transaction("2026-12-10", 50.0, pay, "Erstattung")       # künftige Einnahme zählt nicht
+    store.set_payday(15)
+    store.set_payday_buffer(100.0)
+
+
+def test_payday_cycle_numbers(store):
+    _payday_setup(store)
+    pc = store.payday_cycle(today=datetime.date(2026, 11, 20))
+    assert pc["prev_payday"] == datetime.date(2026, 11, 15) and pc["next_payday"] == datetime.date(2026, 12, 15)
+    assert pc["days_left"] == 25 and pc["cycle_day"] == 6 and pc["cycle_days"] == 30
+    assert pc["balance"] == 2700.0                      # 1000 - 300 + 2000
+    assert pc["known_out"] == 500.0                     # Miete am 1.12.; Gehalt/Erstattung zählen nicht
+    assert pc["avg_daily"] == 10.0 and pc["est_variable"] == 250.0   # 300 € in 30 Tagen
+    assert pc["projected_leftover"] == 1950.0 and pc["suggestion"] == 1850.0
+    assert pc["daily_allowance"] == 84.0 and pc["on_track"] is True
+    assert pc["cycle_expense"] == 0.0                   # seit 15.11. nichts ausgegeben
+
+
+def test_payday_before_and_on_payday_and_one_offs(store):
+    _payday_setup(store)
+    food = _cat(store, "Essen")
+    store.add_transaction("2026-12-05", -100.0, food, "Geplant")       # bekannte einmalige Ausgabe
+    pc = store.payday_cycle(today=datetime.date(2026, 11, 20))
+    assert pc["known_out"] == 600.0 and pc["est_variable"] == 150.0    # 250 - 100 schon eingeplant
+    # am Zahltag selbst beginnt der neue Zyklus
+    on = store.payday_cycle(today=datetime.date(2026, 11, 15))
+    assert on["prev_payday"] == datetime.date(2026, 11, 15) and on["days_left"] == 30
+    # vor dem Zahltag des Monats gehört der Tag noch zum alten Zyklus
+    early = store.payday_cycle(today=datetime.date(2026, 11, 3))
+    assert early["next_payday"] == datetime.date(2026, 11, 15) and early["prev_payday"] == datetime.date(2026, 10, 15)
+
+
+def test_payday_tight_and_disabled(store):
+    _payday_setup(store)
+    store.set_payday_buffer(5000.0)
+    pc = store.payday_cycle(today=datetime.date(2026, 11, 20))
+    assert pc["on_track"] is False and pc["suggestion"] == 0.0 and pc["daily_allowance"] == 0.0
+    store.set_payday(0)
+    assert store.payday_cycle(today=datetime.date(2026, 11, 20)) is None
+    with pytest.raises(ValueError):
+        store.set_payday(31)
+    assert store.get_payday() == 0
+
+
+def test_payday_needs_starting_balance(store):
+    store.set_payday(15)
+    assert store.payday_cycle(today=datetime.date(2026, 11, 20)) is None
+
+
+# -- Zeitraum-Modus: Kalendermonat (Standard) oder Zahltag-Zyklus -----------------
+
+def _period_setup(store):
+    food = _cat(store, "Essen")
+    pay = _cat(store, "Gehalt", "einnahme")
+    store.add_transaction("2026-10-10", -40.0, food, "alt")        # Kalender Okt / Zyklus 09
+    store.add_transaction("2026-10-16", -100.0, food, "A")          # Okt / Zyklus 10
+    store.add_transaction("2026-10-15", 2000.0, pay, "Gehalt")
+    store.add_transaction("2026-11-05", -60.0, food, "B")           # Nov / Zyklus 10
+    store.add_transaction("2026-11-20", -30.0, food, "C")           # Nov / Zyklus 11
+    store.set_payday(15)
+
+
+def test_period_default_is_calendar(store):
+    _period_setup(store)
+    assert store.get_period_mode() == "calendar"
+    assert store.period_bounds("2026-10") == ("2026-10-01", "2026-11-01")
+    assert store.current_period(datetime.date(2026, 11, 20)) == "2026-11"
+    assert {r["category_name"]: r["total"] for r in store.spending_by_category("2026-10")}["Essen"] == 140.0
+
+
+def test_period_cycle_mode_sums_and_keys(store):
+    _period_setup(store)
+    store.set_period_mode("cycle")
+    assert store.get_period_mode() == "cycle"
+    assert store.period_bounds("2026-10") == ("2026-10-15", "2026-11-15")
+    assert store.period_of(datetime.date(2026, 11, 14)) == "2026-10"
+    assert store.period_of(datetime.date(2026, 11, 15)) == "2026-11"
+    assert store.current_period(datetime.date(2026, 11, 20)) == "2026-11"
+    assert store.current_period(datetime.date(2026, 11, 3)) == "2026-10"
+    assert {r["category_name"]: r["total"] for r in store.spending_by_category("2026-10")}["Essen"] == 160.0
+    assert store.income_by_category("2026-10")[0]["total"] == 2000.0
+    trend = store.monthly_trend(2, "2026-11")
+    assert [t["month"] for t in trend] == ["2026-10", "2026-11"]
+    assert trend[0]["expense"] == 160.0 and trend[1]["expense"] == 30.0
+    s = store.month_summary("2026-10")
+    assert s["expense"] == 160.0 and s["income"] == 2000.0 and s["prev_expense"] == 40.0
+    assert store.list_months_with_transactions(), "Zeiträume vorhanden"
+
+
+def test_period_cycle_without_payday_falls_back(store):
+    _period_setup(store)
+    store.set_period_mode("cycle")
+    store.set_payday(0)
+    assert store.get_period_mode() == "calendar"
+    assert store.period_bounds("2026-10") == ("2026-10-01", "2026-11-01")
+    with pytest.raises(ValueError):
+        store.set_period_mode("quatsch")
+
+
+def test_period_dashboard_and_pending_summary_in_cycle(store):
+    _period_setup(store)
+    store.set_period_mode("cycle")
+    d = store.dashboard_data(today=datetime.date(2026, 11, 20))
+    assert d["month"] == "2026-11" and d["period_mode"] == "cycle"
+    assert d["day"] == 6 and d["days_in_month"] == 30
+    assert d["expense_sofar"] == 30.0
+    assert d["period_start"] == datetime.date(2026, 11, 15) and d["period_end"] == datetime.date(2026, 12, 14)
+    pend = store.pending_month_summary(today=datetime.date(2026, 11, 20))
+    assert pend["month"] == "2026-10" and pend["expense"] == 160.0
+    rep = store.month_report_data("2026-10")
+    assert rep["period_start"] == "2026-10-15" and rep["period_end"] == "2026-11-14"

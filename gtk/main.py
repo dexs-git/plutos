@@ -105,6 +105,15 @@ def month_label(date_obj):
     return f"{months()[date_obj.month - 1]} {date_obj.year}"
 
 
+def period_text(store, key):
+    """Bezeichnung eines Auswertungszeitraums (Schlüssel YYYY-MM): Monatsname
+    oder – im Zahltag-Zyklus – der Datumsbereich."""
+    if store.get_period_mode() == "cycle":
+        a, b = store.period_label_dates(key)
+        return f"{a.day}.{a.month}.–{b.day}.{b.month}.{b.year}"
+    return f"{months()[int(key[5:7]) - 1]} {key[:4]}"
+
+
 def _widget_fg_color(widget):
     """Liest die tatsächliche Vordergrundfarbe des aktuellen GTK-Themes aus,
     damit selbst gezeichneter (Cairo-)Text bei dunklen wie hellen Themes
@@ -320,7 +329,7 @@ class MainWindow(Gtk.Window):
             print(f"Sync beim Start fehlgeschlagen: {exc}")
 
         self.selected_day = datetime.date.today()
-        self.stats_month = datetime.date.today().replace(day=1)
+        self.stats_month = datetime.datetime.strptime(self.store.current_period(), "%Y-%m").date()
         self.trend_months = 6
         self.current_etf_plan_id = None
 
@@ -450,6 +459,60 @@ class MainWindow(Gtk.Window):
             row.pack_end(make_link_button(link_text, lambda: self._go_to(link_key)), False, False, 0)
         inner.pack_start(row, False, False, 0)
 
+    def _payday_card(self, pc, t):
+        """„Bis zum nächsten Gehalt“: Resttage, voraussichtlich Übriges, Tagesbudget
+        und wie viel davon in den Notgroschen kann."""
+        card, lay = make_card()
+        self._card_header(lay, tr('Bis zum nächsten Gehalt'), tr('Einstellen'), "planning")
+        nxt = pc["next_payday"]
+        when = f"{nxt.day:02d}.{nxt.month:02d}."
+        head = Gtk.Box(spacing=10)
+        head.pack_start(theme.make_label(
+            tr('{0} Tage bis {1}').format(pc["days_left"], when) if pc["days_left"] != 1
+            else tr('1 Tag bis {0}').format(when), "pace-amount"), False, False, 0)
+        verdict = tr('im Plan') if pc["on_track"] else tr('wird knapp')
+        chip = theme.make_label(verdict, "positive" if pc["on_track"] else "negative")
+        chip.set_markup(f"<b>{GLib.markup_escape_text(verdict)}</b>")
+        head.pack_start(chip, False, False, 0)
+        lay.pack_start(head, False, False, 0)
+
+        rows = [(tr('Heute auf dem Konto'), fmt_amount(pc["balance"]), None),
+                (tr('Fest eingeplant bis dahin'), fmt_amount(-pc["known_out"] if pc["known_out"] else 0), None),
+                (tr('Alltag (geschätzt, Ø {0} pro Tag)').format(fmt_amount(pc["avg_daily"])),
+                 fmt_amount(-pc["est_variable"] if pc["est_variable"] else 0), None),
+                (tr('Voraussichtlich übrig'), fmt_amount(pc["projected_leftover"]),
+                 t["positive"] if pc["projected_leftover"] >= 0 else t["negative"])]
+        grid = Gtk.Grid(column_spacing=12, row_spacing=3)
+        for i, (label, value, color) in enumerate(rows):
+            name = theme.make_label(label, "kpi-sub", wrap=True)
+            name.set_hexpand(True)
+            name.set_xalign(0.0) if hasattr(name, "set_xalign") else None
+            val = Gtk.Label(xalign=1.0)
+            if color:
+                val.set_markup(f'<span foreground="{color}"><b>{GLib.markup_escape_text(value)}</b></span>')
+            else:
+                val.set_text(value)
+            grid.attach(name, 0, i, 1, 1)
+            grid.attach(val, 1, i, 1, 1)
+        lay.pack_start(grid, False, False, 0)
+
+        if pc["on_track"]:
+            tip = tr('Davon in den Notgroschen: {0} (nach {1} Puffer). Spielraum: {2} pro Tag.').format(
+                fmt_amount(pc["suggestion"]), fmt_amount(pc["buffer"]), fmt_amount(pc["daily_allowance"]))
+        else:
+            tip = tr('Bis zum Gehalt fehlen voraussichtlich {0} zum Puffer von {1}. Spielraum: {2} pro Tag.').format(
+                fmt_amount(pc["buffer"] - pc["projected_leftover"]), fmt_amount(pc["buffer"]),
+                fmt_amount(pc["daily_allowance"]))
+        tip_label = Gtk.Label(xalign=0.0)
+        tip_label.set_line_wrap(True)
+        tip_label.set_markup(f"<b>{GLib.markup_escape_text(tip)}</b>")
+        lay.pack_start(tip_label, False, False, 0)
+        lay.pack_start(theme.make_label(
+            tr('Seit dem letzten Gehalt ausgegeben: {0} (Tag {1} von {2}).').format(
+                fmt_amount(pc["cycle_expense"]), pc["cycle_day"], pc["cycle_days"]),
+            "kpi-sub", wrap=True), False, False, 0)
+        return card
+
     def _month_summary_card(self, sm):
         """Kleine Rückschau auf den Vormonat – bleibt, bis man sie ausblendet."""
         t = theme.current()
@@ -457,7 +520,7 @@ class MainWindow(Gtk.Window):
         year, mon = int(sm["month"][:4]), int(sm["month"][5:7])
         row = Gtk.Box()
         row.pack_start(theme.make_label(
-            tr('Monatsabschluss {0}').format(f"{months()[mon - 1]} {year}"), "card-title"), True, True, 0)
+            tr('Monatsabschluss {0}').format(period_text(self.store, sm["month"])), "card-title"), True, True, 0)
         row.pack_end(make_link_button(tr('Ausblenden'), lambda: self._dismiss_month_summary(sm["month"])), False, False, 0)
         row.pack_end(make_link_button(tr('Als PDF…'), lambda: self._on_export_month_pdf(sm["month"])), False, False, 0)
         row.pack_end(make_link_button(tr('Auswertungen'), lambda: self._go_to("stats")), False, False, 0)
@@ -667,7 +730,7 @@ class MainWindow(Gtk.Window):
         self.dashboard_holder.show_all()
 
     def _on_reminder_settings(self, *_):
-        dialog = ReminderSettingsDialog(self, self.store, datetime.date.today().strftime("%Y-%m"))
+        dialog = ReminderSettingsDialog(self, self.store, self.store.current_period())
         dialog.show_all()
         if dialog.run() == Gtk.ResponseType.OK:
             dialog.save()
@@ -693,7 +756,7 @@ class MainWindow(Gtk.Window):
 
         header = Gtk.Box(spacing=12)
         header.pack_start(theme.make_label(tr('Übersicht'), "page-title"), False, False, 0)
-        month = theme.make_label(f"{months()[today.month - 1]} {today.year}", "muted")
+        month = theme.make_label(period_text(self.store, d["month"]), "muted")
         month.set_valign(Gtk.Align.END)
         month.set_margin_bottom(3)
         header.pack_start(month, False, False, 0)
@@ -737,9 +800,11 @@ class MainWindow(Gtk.Window):
         saldo = d["income_sofar"] - d["expense_sofar"]
         sub = tr('Einnahmen {0} · Ausgaben {1}').format(fmt_amount(d["income_sofar"]), fmt_amount(d["expense_sofar"]))
         if d["expense_planned"] - d["expense_sofar"] > 0.005:
-            sub += "\n" + tr('Bis Monatsende geplant: {0} Ausgaben').format(
+            sub += "\n" + tr('Bis Zyklusende geplant: {0} Ausgaben' if d["period_mode"] == "cycle"
+                              else 'Bis Monatsende geplant: {0} Ausgaben').format(
                 fmt_amount(d["expense_planned"] - d["expense_sofar"]))
-        card2, _ = self._kpi_card(tr('Saldo im {0}').format(months()[today.month - 1]),
+        card2, _ = self._kpi_card((tr('Saldo im Zyklus') if d["period_mode"] == "cycle"
+                                   else tr('Saldo im {0}').format(months()[today.month - 1])),
                                   fmt_amount(saldo), sub, "positive" if saldo >= 0 else "negative")
         grid.attach(card2, 2, 3, 2, 1)
 
@@ -782,18 +847,24 @@ class MainWindow(Gtk.Window):
             bar.set_values(ratio, elapsed)
             pl.pack_start(bar, False, False, 0)
             pl.pack_start(theme.make_label(
-                tr('Tag {0} von {1}: {2} % des Monats sind vorbei, {3} % {4} ausgegeben.').format(
+                tr('Tag {0} von {1}: {2} % des Zyklus sind vorbei, {3} % {4} ausgegeben.' if d["period_mode"] == "cycle"
+                 else 'Tag {0} von {1}: {2} % des Monats sind vorbei, {3} % {4} ausgegeben.').format(
                     d["day"], d["days_in_month"], f"{elapsed * 100:.0f}", f"{ratio * 100:.0f}", basis),
                 "kpi-sub", wrap=True), False, False, 0)
         else:
             pl.pack_start(theme.make_label(
                 tr('Sobald Budgets gesetzt sind oder Buchungen aus Vormonaten vorliegen, zeigt Plutos hier, ob du im Rahmen bleibst.'),
                 "kpi-sub", wrap=True), False, False, 0)
-        grid.attach(pace, 0, 4, 6, 1)
+        payday = self.store.payday_cycle()
+        if payday:
+            grid.attach(pace, 0, 4, 3, 1)
+            grid.attach(self._payday_card(payday, t), 3, 4, 3, 1)
+        else:
+            grid.attach(pace, 0, 4, 6, 1)
 
         # --- Budgets ------------------------------------------------------
         bcard, bl = make_card(spacing=8)
-        self._card_header(bl, tr('Budgets im Monat'), tr('Alle ansehen'), "budgets")
+        self._card_header(bl, (tr('Budgets im Zyklus') if d["period_mode"] == "cycle" else tr('Budgets im Monat')), tr('Alle ansehen'), "budgets")
         if d["top_budgets"]:
             for b in d["top_budgets"]:
                 color = {"over": t["negative"], "warn": t["warn"], "full": t["warn"]}.get(b["level"], t["accent"])
@@ -3552,6 +3623,38 @@ class MainWindow(Gtk.Window):
         balance_hint.set_line_wrap(True)
         balance_grid.attach(balance_hint, 0, 6, 3, 1)
 
+        # -- Abschnitt: Zahltag --
+        pd_frame = Gtk.Frame(label=tr('Zahltag'))
+        box.pack_start(pd_frame, False, False, 0)
+        pd_box = Gtk.Box(spacing=8)
+        pd_box.set_border_width(8)
+        pd_frame.add(pd_box)
+        pd_box.pack_start(Gtk.Label(label=tr('Gehalt kommt am:')), False, False, 0)
+        self.payday_spin = Gtk.SpinButton(
+            adjustment=Gtk.Adjustment(value=self.store.get_payday(), lower=0, upper=28,
+                                      step_increment=1, page_increment=5), numeric=True)
+        pd_box.pack_start(self.payday_spin, False, False, 0)
+        pd_box.pack_start(Gtk.Label(label=tr('. des Monats (0 = aus)')), False, False, 0)
+        pd_box.pack_start(Gtk.Label(label=tr('Puffer bis zum Gehalt:')), False, False, 0)
+        self.payday_buffer_spin = Gtk.SpinButton(
+            adjustment=Gtk.Adjustment(value=self.store.get_payday_buffer(), lower=0, upper=1000000,
+                                      step_increment=50, page_increment=500), digits=0, numeric=True)
+        pd_box.pack_start(self.payday_buffer_spin, False, False, 0)
+        pd_box.pack_start(Gtk.Label(label="€"), False, False, 0)
+        pd_box.pack_start(Gtk.Label(label=tr('Auswerten nach:')), False, False, 0)
+        self.period_combo = Gtk.ComboBoxText()
+        self.period_combo.append("calendar", tr('Kalendermonat'))
+        self.period_combo.append("cycle", tr('Zahltag-Zyklus'))
+        self.period_combo.set_active_id(self.store.get_period_mode())
+        self.period_combo.set_sensitive(self.store.get_payday() > 0)
+        pd_box.pack_start(self.period_combo, False, False, 0)
+        pd_box.pack_start(_help_button(
+            tr('Mit Zahltag zeigt die Übersicht eine Karte „Bis zum nächsten Gehalt“: Resttage, was voraussichtlich bis dahin übrig bleibt (Konto minus bereits eingetragene Ausgaben minus geschätzte Alltagsausgaben der letzten 30 Tage) und wie viel davon in den Notgroschen kann. Der Puffer bleibt auf dem Konto. Künftige Einnahmen vor dem Zahltag werden nicht eingerechnet. 0 = aus. Das ist eine Hochrechnung, keine Vorhersage. „Auswerten nach“ legt fest, ob Übersicht, Monatsabschluss, Budgets, Auswertungen und PDF-Bericht den Kalendermonat (Standard) oder den Zyklus von Zahltag zu Zahltag verwenden. Die Kalenderansicht, Jahresabschluss und Jahresvergleiche bleiben beim Kalender.')),
+            False, False, 0)
+        self.payday_spin.connect("value-changed", self._on_payday_changed)
+        self.payday_buffer_spin.connect("value-changed", self._on_payday_changed)
+        self.period_combo.connect("changed", self._on_period_mode_changed)
+
         # -- Abschnitt: Cashflow-Vorschau --
         cf_frame = Gtk.Frame(label=tr('Cashflow-Vorschau'))
         box.pack_start(cf_frame, False, False, 0)
@@ -3793,6 +3896,25 @@ class MainWindow(Gtk.Window):
                     tr('Aktueller Kontostand (berechnet): <b>{0}</b>').format(fmt_amount(balance))
                 )
         self._refresh_cashflow()
+
+    def _on_payday_changed(self, *_args):
+        self.store.set_payday(int(self.payday_spin.get_value()))
+        self.store.set_payday_buffer(self.payday_buffer_spin.get_value())
+        self.period_combo.set_sensitive(self.store.get_payday() > 0)
+        if self.store.get_setting("period_mode", "calendar") == "cycle":
+            self._apply_period_change()
+
+    def _on_period_mode_changed(self, combo):
+        self.store.set_period_mode(combo.get_active_id() or "calendar")
+        self._apply_period_change()
+
+    def _apply_period_change(self):
+        """Zeitraum-Modus (oder Zahltag) hat sich geändert: alles neu zeichnen."""
+        self.stats_month = datetime.datetime.strptime(self.store.current_period(), "%Y-%m").date()
+        self._refresh_dashboard()
+        self._refresh_stats()
+        self._refresh_budgets_tab()
+        self._refresh_report_months()
 
     def _refresh_cashflow(self, *_args):
         if not hasattr(self, "cashflow_area"):
@@ -4753,11 +4875,12 @@ class MainWindow(Gtk.Window):
 
         if not year_mode:
             prev_month = add_months(self.stats_month, -1)
+            prev_str = prev_month.strftime("%Y-%m")
             self.compare_label.set_text(
-                tr('{0} gegen {1}').format(month_label(self.stats_month), month_label(prev_month)))
-            rows = self.store.category_comparison(month_str, prev_month.strftime("%Y-%m"))
+                tr('{0} gegen {1}').format(period_text(self.store, month_str), period_text(self.store, prev_str)))
+            rows = self.store.category_comparison(month_str, prev_str)
             self._compare_rows = rows[:12]
-            self._compare_labels = (month_label(self.stats_month), month_label(prev_month))
+            self._compare_labels = (period_text(self.store, month_str), period_text(self.store, prev_str))
             total_cur = sum(r["current"] for r in rows)
             total_prev = sum(r["previous"] for r in rows)
             diff = total_cur - total_prev
@@ -5262,9 +5385,9 @@ class MainWindow(Gtk.Window):
         self._refresh_stats()
 
     def _refresh_stats(self):
-        self.stats_month_label.set_text(month_label(self.stats_month))
-        self.sankey_month_label.set_text(month_label(self.stats_month))
         month_str = self.stats_month.strftime("%Y-%m")
+        self.stats_month_label.set_text(period_text(self.store, month_str))
+        self.sankey_month_label.set_text(period_text(self.store, month_str))
 
         expense_rows = self.store.spending_by_category(month_str)
         self._pie_data = []
@@ -6358,7 +6481,7 @@ class MainWindow(Gtk.Window):
         self.report_month_combo.remove_all()
         names = months()
         for m in self.store.list_months_with_transactions():
-            self.report_month_combo.append(m, f"{names[int(m[5:7]) - 1]} {m[:4]}")
+            self.report_month_combo.append(m, period_text(self.store, m))
         if not (previous and self.report_month_combo.set_active_id(previous)):
             self.report_month_combo.set_active(0)
 

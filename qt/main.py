@@ -78,6 +78,15 @@ def month_label(date_obj):
     return f"{months()[date_obj.month - 1]} {date_obj.year}"
 
 
+def period_text(store, key):
+    """Bezeichnung eines Auswertungszeitraums (Schlüssel YYYY-MM): Monatsname
+    oder – im Zahltag-Zyklus – der Datumsbereich."""
+    if store.get_period_mode() == "cycle":
+        a, b = store.period_label_dates(key)
+        return f"{a.day}.{a.month}.–{b.day}.{b.month}.{b.year}"
+    return f"{months()[int(key[5:7]) - 1]} {key[:4]}"
+
+
 def _qdate_to_date(qdate: QDate) -> datetime.date:
     return datetime.date(qdate.year(), qdate.month(), qdate.day())
 
@@ -143,7 +152,7 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(1500, self._start_update_check)
 
         self.selected_day = datetime.date.today()
-        self.stats_month = datetime.date.today().replace(day=1)
+        self.stats_month = datetime.datetime.strptime(self.store.current_period(), "%Y-%m").date()
         self.trend_months = 6
         self.current_etf_plan_id = None
         self._current_recommendation = None
@@ -310,13 +319,70 @@ class MainWindow(QMainWindow):
             row.addWidget(make_link_button(link_text, lambda: self._go_to(link_key)))
         lay.addLayout(row)
 
+    def _payday_card(self, pc, t):
+        """„Bis zum nächsten Gehalt“: Resttage, voraussichtlich Übriges, Tagesbudget
+        und wie viel davon in den Notgroschen kann."""
+        card, lay = make_card()
+        self._card_header(lay, tr('Bis zum nächsten Gehalt'), tr('Einstellen'), "planning")
+        nxt = pc["next_payday"]
+        head = QHBoxLayout()
+        days = QLabel(tr('{0} Tage bis {1}').format(pc["days_left"], f"{nxt.day:02d}.{nxt.month:02d}.")
+                      if pc["days_left"] != 1 else tr('1 Tag bis {0}').format(f"{nxt.day:02d}.{nxt.month:02d}."))
+        days.setStyleSheet("font-size: 18px; font-weight: 600;")
+        head.addWidget(days)
+        chip = QLabel(tr('im Plan') if pc["on_track"] else tr('wird knapp'))
+        chip.setStyleSheet(f"color: {t['positive'] if pc['on_track'] else t['negative']}; font-weight: 600;")
+        head.addWidget(chip)
+        head.addStretch()
+        lay.addLayout(head)
+
+        rows = [(tr('Heute auf dem Konto'), fmt_amount(pc["balance"]), None),
+                (tr('Fest eingeplant bis dahin'), fmt_amount(-pc["known_out"] if pc["known_out"] else 0), None),
+                (tr('Alltag (geschätzt, Ø {0} pro Tag)').format(fmt_amount(pc["avg_daily"])),
+                 fmt_amount(-pc["est_variable"] if pc["est_variable"] else 0), None),
+                (tr('Voraussichtlich übrig'), fmt_amount(pc["projected_leftover"]),
+                 t["positive"] if pc["projected_leftover"] >= 0 else t["negative"])]
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(3)
+        for i, (label, value, color) in enumerate(rows):
+            name = QLabel(label)
+            name.setObjectName("kpiSub")
+            name.setWordWrap(True)
+            val = QLabel(value)
+            val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            if i == len(rows) - 1:
+                val.setStyleSheet(f"font-weight: 600; color: {color};")
+            grid.addWidget(name, i, 0)
+            grid.addWidget(val, i, 1)
+        grid.setColumnStretch(0, 1)
+        lay.addLayout(grid)
+
+        if pc["on_track"]:
+            tip = QLabel(tr('Davon in den Notgroschen: {0} (nach {1} Puffer). Spielraum: {2} pro Tag.').format(
+                fmt_amount(pc["suggestion"]), fmt_amount(pc["buffer"]), fmt_amount(pc["daily_allowance"])))
+        else:
+            tip = QLabel(tr('Bis zum Gehalt fehlen voraussichtlich {0} zum Puffer von {1}. Spielraum: {2} pro Tag.').format(
+                fmt_amount(pc["buffer"] - pc["projected_leftover"]), fmt_amount(pc["buffer"]),
+                fmt_amount(pc["daily_allowance"])))
+        tip.setWordWrap(True)
+        tip.setStyleSheet("font-weight: 600;")
+        lay.addWidget(tip)
+        note = QLabel(tr('Seit dem letzten Gehalt ausgegeben: {0} (Tag {1} von {2}).').format(
+            fmt_amount(pc["cycle_expense"]), pc["cycle_day"], pc["cycle_days"]))
+        note.setObjectName("kpiSub")
+        note.setWordWrap(True)
+        lay.addWidget(note)
+        lay.addStretch()
+        return card
+
     def _month_summary_card(self, sm):
         """Kleine Rückschau auf den Vormonat – bleibt, bis man sie ausblendet."""
         t = theme.current()
         card, lay = make_card()
         year, mon = int(sm["month"][:4]), int(sm["month"][5:7])
         row = QHBoxLayout()
-        title = QLabel(tr('Monatsabschluss {0}').format(f"{months()[mon - 1]} {year}"))
+        title = QLabel(tr('Monatsabschluss {0}').format(period_text(self.store, sm["month"])))
         title.setObjectName("cardTitle")
         row.addWidget(title, 1)
         row.addWidget(make_link_button(tr('Auswertungen'), lambda: self._go_to("stats")))
@@ -537,8 +603,7 @@ class MainWindow(QMainWindow):
         self._refresh_dashboard()
 
     def _on_reminder_settings(self):
-        dialog = ReminderSettingsDialog(self, self.store,
-                                        datetime.date.today().strftime("%Y-%m"))
+        dialog = ReminderSettingsDialog(self, self.store, self.store.current_period())
         if dialog.exec() == ReminderSettingsDialog.Accepted:
             dialog.save()
             self._refresh_dashboard()
@@ -562,7 +627,7 @@ class MainWindow(QMainWindow):
         title = QLabel(tr('Übersicht'))
         title.setObjectName("pageTitle")
         header.addWidget(title)
-        month_label = QLabel(f"{months()[today.month - 1]} {today.year}")
+        month_label = QLabel(period_text(self.store, d["month"]))
         month_label.setObjectName("muted")
         header.addWidget(month_label, 0, Qt.AlignBottom)
         header.addStretch()
@@ -609,9 +674,11 @@ class MainWindow(QMainWindow):
         saldo = d["income_sofar"] - d["expense_sofar"]
         sub = tr('Einnahmen {0} · Ausgaben {1}').format(fmt_amount(d["income_sofar"]), fmt_amount(d["expense_sofar"]))
         if d["expense_planned"] - d["expense_sofar"] > 0.005:
-            sub += "\n" + tr('Bis Monatsende geplant: {0} Ausgaben').format(
+            sub += "\n" + tr('Bis Zyklusende geplant: {0} Ausgaben' if d["period_mode"] == "cycle"
+                              else 'Bis Monatsende geplant: {0} Ausgaben').format(
                 fmt_amount(d["expense_planned"] - d["expense_sofar"]))
-        card2, _ = self._kpi_card(tr('Saldo im {0}').format(months()[today.month - 1]),
+        card2, _ = self._kpi_card((tr('Saldo im Zyklus') if d["period_mode"] == "cycle"
+                                   else tr('Saldo im {0}').format(months()[today.month - 1])),
                                   fmt_amount(saldo), sub,
                                   t["positive"] if saldo >= 0 else t["negative"])
         grid.addWidget(card2, 3, 2, 1, 2)
@@ -656,7 +723,8 @@ class MainWindow(QMainWindow):
             bar = PaceBar()
             bar.set_values(ratio, elapsed)
             pl.addWidget(bar)
-            note = QLabel(tr('Tag {0} von {1}: {2} % des Monats sind vorbei, {3} % {4} ausgegeben.').format(
+            note = QLabel(tr('Tag {0} von {1}: {2} % des Zyklus sind vorbei, {3} % {4} ausgegeben.' if d["period_mode"] == "cycle"
+                 else 'Tag {0} von {1}: {2} % des Monats sind vorbei, {3} % {4} ausgegeben.').format(
                 d["day"], d["days_in_month"], f"{elapsed * 100:.0f}", f"{ratio * 100:.0f}", basis))
             note.setObjectName("kpiSub")
             note.setWordWrap(True)
@@ -666,11 +734,16 @@ class MainWindow(QMainWindow):
             hint.setObjectName("kpiSub")
             hint.setWordWrap(True)
             pl.addWidget(hint)
-        grid.addWidget(pace, 4, 0, 1, 6)
+        payday = self.store.payday_cycle()
+        if payday:
+            grid.addWidget(pace, 4, 0, 1, 3)
+            grid.addWidget(self._payday_card(payday, t), 4, 3, 1, 3)
+        else:
+            grid.addWidget(pace, 4, 0, 1, 6)
 
         # --- Budgets ------------------------------------------------------
         bcard, bl = make_card()
-        self._card_header(bl, tr('Budgets im Monat'), tr('Alle ansehen'), "budgets")
+        self._card_header(bl, (tr('Budgets im Zyklus') if d["period_mode"] == "cycle" else tr('Budgets im Monat')), tr('Alle ansehen'), "budgets")
         if d["top_budgets"]:
             for b in d["top_budgets"]:
                 color = {"over": t["negative"], "warn": t["warn"], "full": t["warn"]}.get(b["level"], t["accent"])
@@ -1595,6 +1668,39 @@ class MainWindow(QMainWindow):
         balance_hint.setWordWrap(True)
         balance_grid.addWidget(balance_hint, 6, 0, 1, 3)
 
+        # -- Abschnitt: Zahltag --
+        pd_group = QGroupBox(tr('Zahltag'))
+        layout.addWidget(pd_group)
+        pd_row = QHBoxLayout(pd_group)
+        pd_row.addWidget(QLabel(tr('Gehalt kommt am:')))
+        self.payday_spin = QSpinBox()
+        self.payday_spin.setRange(0, 28)
+        self.payday_spin.setSpecialValueText(tr('aus'))
+        self.payday_spin.setSuffix(tr('. des Monats'))
+        self.payday_spin.setValue(self.store.get_payday())
+        pd_row.addWidget(self.payday_spin)
+        pd_row.addWidget(QLabel(tr('Puffer bis zum Gehalt:')))
+        self.payday_buffer_spin = QDoubleSpinBox()
+        self.payday_buffer_spin.setRange(0, 1_000_000)
+        self.payday_buffer_spin.setDecimals(0)
+        self.payday_buffer_spin.setSingleStep(50)
+        self.payday_buffer_spin.setSuffix(" €")
+        self.payday_buffer_spin.setValue(self.store.get_payday_buffer())
+        pd_row.addWidget(self.payday_buffer_spin)
+        pd_row.addWidget(QLabel(tr('Auswerten nach:')))
+        self.period_combo = QComboBox()
+        self.period_combo.addItem(tr('Kalendermonat'), "calendar")
+        self.period_combo.addItem(tr('Zahltag-Zyklus'), "cycle")
+        self.period_combo.setCurrentIndex(1 if self.store.get_period_mode() == "cycle" else 0)
+        self.period_combo.setEnabled(self.store.get_payday() > 0)
+        pd_row.addWidget(self.period_combo)
+        pd_row.addWidget(make_help_button(
+            tr('Mit Zahltag zeigt die Übersicht eine Karte „Bis zum nächsten Gehalt“: Resttage, was voraussichtlich bis dahin übrig bleibt (Konto minus bereits eingetragene Ausgaben minus geschätzte Alltagsausgaben der letzten 30 Tage) und wie viel davon in den Notgroschen kann. Der Puffer bleibt auf dem Konto. Künftige Einnahmen vor dem Zahltag werden nicht eingerechnet. 0 = aus. Das ist eine Hochrechnung, keine Vorhersage. „Auswerten nach“ legt fest, ob Übersicht, Monatsabschluss, Budgets, Auswertungen und PDF-Bericht den Kalendermonat (Standard) oder den Zyklus von Zahltag zu Zahltag verwenden. Die Kalenderansicht, Jahresabschluss und Jahresvergleiche bleiben beim Kalender.')))
+        pd_row.addStretch()
+        self.payday_spin.valueChanged.connect(self._on_payday_changed)
+        self.payday_buffer_spin.valueChanged.connect(self._on_payday_changed)
+        self.period_combo.currentIndexChanged.connect(self._on_period_mode_changed)
+
         # -- Abschnitt: Cashflow-Vorschau --
         cf_group = QGroupBox(tr('Cashflow-Vorschau'))
         layout.addWidget(cf_group)
@@ -1787,6 +1893,25 @@ class MainWindow(QMainWindow):
                 text = "\n".join(lines)
             self.current_balance_label.setText(text)
         self._refresh_cashflow()
+
+    def _on_payday_changed(self, *_args):
+        self.store.set_payday(self.payday_spin.value())
+        self.store.set_payday_buffer(self.payday_buffer_spin.value())
+        self.period_combo.setEnabled(self.store.get_payday() > 0)
+        if self.store.get_setting("period_mode", "calendar") == "cycle":
+            self._apply_period_change()
+
+    def _on_period_mode_changed(self, *_args):
+        self.store.set_period_mode(self.period_combo.currentData())
+        self._apply_period_change()
+
+    def _apply_period_change(self):
+        """Zeitraum-Modus (oder Zahltag) hat sich geändert: alles neu zeichnen."""
+        self.stats_month = datetime.datetime.strptime(self.store.current_period(), "%Y-%m").date()
+        self._refresh_dashboard()
+        self._refresh_stats()
+        self._refresh_budgets_tab()
+        self._refresh_report_months()
 
     def _refresh_cashflow(self, *_args):
         if not hasattr(self, "cashflow_chart"):
@@ -2578,10 +2703,10 @@ class MainWindow(QMainWindow):
             prev_month = add_months(self.stats_month, -1)
             prev_str = prev_month.strftime("%Y-%m")
             self.compare_label.setText(
-                tr('{0} gegen {1}').format(month_label(self.stats_month), month_label(prev_month)))
+                tr('{0} gegen {1}').format(period_text(self.store, month_str), period_text(self.store, prev_str)))
             rows = self.store.category_comparison(month_str, prev_str)
             self.compare_month_widget.set_data(
-                rows, month_label(self.stats_month), month_label(prev_month))
+                rows, period_text(self.store, month_str), period_text(self.store, prev_str))
             total_cur = sum(r["current"] for r in rows)
             total_prev = sum(r["previous"] for r in rows)
             diff = total_cur - total_prev
@@ -2898,9 +3023,9 @@ class MainWindow(QMainWindow):
         self._refresh_stats()
 
     def _refresh_stats(self):
-        self.stats_month_label.setText(month_label(self.stats_month))
-        self.sankey_month_label.setText(month_label(self.stats_month))
         month_str = self.stats_month.strftime("%Y-%m")
+        self.stats_month_label.setText(period_text(self.store, month_str))
+        self.sankey_month_label.setText(period_text(self.store, month_str))
 
         expense_rows = self.store.spending_by_category(month_str)
         pie_data = [(r["category_name"], r["icon"], r["total"], color_for_index(i))
@@ -3461,7 +3586,7 @@ class MainWindow(QMainWindow):
         self.report_month_combo.clear()
         names = months()
         for m in self.store.list_months_with_transactions():
-            self.report_month_combo.addItem(f"{names[int(m[5:7]) - 1]} {m[:4]}", m)
+            self.report_month_combo.addItem(period_text(self.store, m), m)
         index = self.report_month_combo.findData(previous)
         if index >= 0:
             self.report_month_combo.setCurrentIndex(index)

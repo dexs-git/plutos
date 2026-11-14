@@ -747,11 +747,11 @@ class FinanceStore:
             SELECT c.id AS category_id, c.name AS category_name, c.icon,
                    COALESCE(SUM(-t.amount), 0) AS spent
             FROM categories c
-            LEFT JOIN transactions t ON t.category_id = c.id AND t.date LIKE ?
+            LEFT JOIN transactions t ON t.category_id = c.id AND t.date >= ? AND t.date < ?
             WHERE c.kind = 'ausgabe'
             GROUP BY c.id
             ORDER BY c.name
-        """, (_month_pattern(month),))
+        """, self.period_bounds(month))
         rows = []
         for r in cur.fetchall():
             limit, source = effective.get(r["category_id"], (None, None))
@@ -1302,10 +1302,10 @@ class FinanceStore:
         cur = self.conn.execute("""
             SELECT c.name AS category_name, c.icon, -SUM(t.amount) AS total
             FROM transactions t JOIN categories c ON t.category_id = c.id
-            WHERE c.kind = 'ausgabe' AND t.date LIKE ? AND t.amount < 0
+            WHERE c.kind = 'ausgabe' AND t.date >= ? AND t.date < ? AND t.amount < 0
             GROUP BY c.id
             ORDER BY total DESC
-        """, (_month_pattern(month),))
+        """, self.period_bounds(month))
         return cur.fetchall()
 
     def income_by_category(self, month):
@@ -1315,10 +1315,10 @@ class FinanceStore:
         cur = self.conn.execute("""
             SELECT c.name AS category_name, c.icon, SUM(t.amount) AS total
             FROM transactions t JOIN categories c ON t.category_id = c.id
-            WHERE c.kind = 'einnahme' AND t.date LIKE ? AND t.amount > 0
+            WHERE c.kind = 'einnahme' AND t.date >= ? AND t.date < ? AND t.amount > 0
             GROUP BY c.id
             ORDER BY total DESC
-        """, (_month_pattern(month),))
+        """, self.period_bounds(month))
         return cur.fetchall()
 
     def monthly_trend(self, num_months=6, end_month=None):
@@ -1327,7 +1327,7 @@ class FinanceStore:
         if end_month:
             end_date = datetime.datetime.strptime(end_month, "%Y-%m").date().replace(day=1)
         else:
-            end_date = datetime.date.today().replace(day=1)
+            end_date = datetime.datetime.strptime(self.current_period(), "%Y-%m").date()
 
         months = []
         cursor_date = add_months(end_date, -(num_months - 1))
@@ -1341,8 +1341,8 @@ class FinanceStore:
                 SELECT
                     COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END), 0) AS income,
                     COALESCE(SUM(CASE WHEN amount < 0 THEN -amount ELSE 0 END), 0) AS expense
-                FROM transactions WHERE date LIKE ?
-            """, (_month_pattern(month),))
+                FROM transactions WHERE date >= ? AND date < ?
+            """, self.period_bounds(month))
             row = cur.fetchone()
             results.append({"month": month, "income": row["income"], "expense": row["expense"]})
         return results
@@ -1754,16 +1754,17 @@ class FinanceStore:
         drei Vormonate mit Ausgaben (sonst None)."""
         if today is None:
             today = datetime.date.today()
-        month = today.strftime("%Y-%m")
-        pattern = _month_pattern(month)
-        first = today.replace(day=1)
-        days_in_month = (add_months(first, 1) - first).days
+        month = self.current_period(today)
+        p_start, p_end = self.period_bounds(month)
+        first = datetime.date.fromisoformat(p_start)
+        days_in_month = (datetime.date.fromisoformat(p_end) - first).days
+        day_of_period = (today - first).days + 1
 
         def sums(upto=None):
             sql = ("SELECT COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END), 0) AS income, "
                    "COALESCE(SUM(CASE WHEN amount < 0 THEN -amount ELSE 0 END), 0) AS expense "
-                   "FROM transactions WHERE date LIKE ?")
-            params = [pattern]
+                   "FROM transactions WHERE date >= ? AND date < ?")
+            params = [p_start, p_end]
             if upto:
                 sql += " AND date <= ?"
                 params.append(upto.isoformat())
@@ -1784,7 +1785,7 @@ class FinanceStore:
                 m = add_months(first, -back).strftime("%Y-%m")
                 row = self.conn.execute(
                     "SELECT COALESCE(SUM(-amount), 0) AS e FROM transactions "
-                    "WHERE date LIKE ? AND amount < 0", (_month_pattern(m),)).fetchone()
+                    "WHERE date >= ? AND date < ? AND amount < 0", self.period_bounds(m)).fetchone()
                 if row["e"] > 0:
                     previous.append(float(row["e"]))
             if previous:
@@ -1806,7 +1807,9 @@ class FinanceStore:
         """, (today.isoformat(),)).fetchall()]
 
         return {
-            "month": month, "day": today.day, "days_in_month": days_in_month,
+            "month": month, "day": day_of_period, "days_in_month": days_in_month,
+            "period_start": first, "period_end": datetime.date.fromisoformat(p_end) - datetime.timedelta(days=1),
+            "period_mode": self.get_period_mode(),
             "income_sofar": income_sofar, "expense_sofar": expense_sofar,
             "income_planned": income_planned, "expense_planned": expense_planned,
             "baseline": baseline, "baseline_kind": baseline_kind,
@@ -1881,7 +1884,7 @@ class FinanceStore:
 
         budgets = []
         muted = self.muted_budget_reminders()
-        for r in self.budget_overview(today.strftime("%Y-%m")):
+        for r in self.budget_overview(self.current_period(today)):
             if not r["limit_amount"] or r["category_id"] in muted:
                 continue
             level = self.budget_level(r["spent"], r["limit_amount"])
@@ -1926,12 +1929,12 @@ class FinanceStore:
             row = self.conn.execute(
                 "SELECT COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END), 0) AS income, "
                 "COALESCE(SUM(CASE WHEN amount < 0 THEN -amount ELSE 0 END), 0) AS expense, "
-                "COUNT(*) AS n FROM transactions WHERE date LIKE ?", (_month_pattern(m),)).fetchone()
+                "COUNT(*) AS n FROM transactions WHERE date >= ? AND date < ?",
+                self.period_bounds(m)).fetchone()
             return row["income"], row["expense"], row["n"]
 
         income, expense, count = sums(month)
-        year, mon = int(month[:4]), int(month[5:7])
-        prev = add_months(datetime.date(year, mon, 1), -1).strftime("%Y-%m")
+        prev = self.shift_period(month, -1)
         prev_income, prev_expense, prev_count = sums(prev)
         top = self.spending_by_category(month)
         top_category = None
@@ -1960,7 +1963,7 @@ class FinanceStore:
         """Monatsabschluss für den Vormonat, solange er Buchungen enthält und
         noch nicht ausgeblendet wurde; sonst None."""
         today = today or datetime.date.today()
-        prev = add_months(today.replace(day=1), -1).strftime("%Y-%m")
+        prev = self.shift_period(self.current_period(today), -1)
         if self.get_setting("month_summary_seen") == prev:
             return None
         summary = self.month_summary(prev)
@@ -2488,25 +2491,167 @@ class FinanceStore:
 
     # -- Monatsbericht (PDF) ----------------------------------------------------------
 
+    # -- Zahltag ("Bis zum nächsten Gehalt") ------------------------------------------
+
+    # -- Zeitraum: Kalendermonat oder Zahltag-Zyklus -----------------------------------
+    # Ein „Monat“ (Schlüssel YYYY-MM) ist im Standard der Kalendermonat. Ist der
+    # Zeitraum-Modus „cycle“ und ein Zahltag gesetzt, ist es stattdessen der Zyklus,
+    # der im Monat YYYY-MM am Zahltag beginnt (z. B. Zahltag 15: „2026-10“ =
+    # 15.10.–14.11.).
+
+    def get_period_mode(self):
+        """"calendar" (Standard) oder "cycle" (nur wirksam, wenn ein Zahltag gesetzt ist)."""
+        if self.get_setting("period_mode", "calendar") == "cycle" and self.get_payday():
+            return "cycle"
+        return "calendar"
+
+    def set_period_mode(self, mode):
+        if mode not in ("calendar", "cycle"):
+            raise ValueError("Unbekannter Zeitraum-Modus")
+        self.set_setting("period_mode", mode)
+
+    def period_bounds(self, month):
+        """(Start, Ende) als ISO-Datum; Start inklusive, Ende exklusive."""
+        if len(month) == 4:  # Jahresschlüssel (Jahresvergleiche bleiben Kalenderjahre)
+            return f"{int(month):04d}-01-01", f"{int(month) + 1:04d}-01-01"
+        year, mon = int(month[:4]), int(month[5:7])
+        start = datetime.date(year, mon, 1)
+        if self.get_period_mode() == "cycle":
+            start = start.replace(day=self.get_payday())
+        return start.isoformat(), add_months(start, 1).isoformat()
+
+    def period_of(self, day):
+        """Schlüssel (YYYY-MM) des Zeitraums, in den ein Datum fällt."""
+        if self.get_period_mode() == "cycle" and day.day < self.get_payday():
+            day = add_months(day.replace(day=1), -1)
+        return day.strftime("%Y-%m")
+
+    def current_period(self, today=None):
+        return self.period_of(today or datetime.date.today())
+
+    def shift_period(self, month, delta):
+        year, mon = int(month[:4]), int(month[5:7])
+        return add_months(datetime.date(year, mon, 1), delta).strftime("%Y-%m")
+
+    def period_label_dates(self, month):
+        """(erster, letzter Tag) eines Zeitraums als date-Objekte."""
+        start, end = self.period_bounds(month)
+        return (datetime.date.fromisoformat(start),
+                datetime.date.fromisoformat(end) - datetime.timedelta(days=1))
+
+    def get_payday(self):
+        """Zahltag als Tag im Monat (1–28) oder 0 = nicht eingestellt."""
+        try:
+            day = int(self.get_setting("payday", "0"))
+        except (TypeError, ValueError):
+            return 0
+        return day if 1 <= day <= 28 else 0
+
+    def set_payday(self, day):
+        day = int(day)
+        if not 0 <= day <= 28:
+            raise ValueError("Der Zahltag muss zwischen 1 und 28 liegen")
+        self.set_setting("payday", day)
+
+    def get_payday_buffer(self):
+        """Betrag, der bis zum nächsten Gehalt auf dem Konto bleiben soll."""
+        try:
+            return max(0.0, float(self.get_setting("payday_buffer", "100")))
+        except (TypeError, ValueError):
+            return 100.0
+
+    def set_payday_buffer(self, amount):
+        self.set_setting("payday_buffer", max(0.0, float(amount)))
+
+    def payday_cycle(self, today=None):
+        """Lage zwischen zwei Gehältern (None, wenn kein Zahltag oder kein
+        Kontostand hinterlegt ist).
+
+        Rechnet mit dem Gesamtkontostand ohne Notgroschen-Unterkonto:
+        - known_out: bis zum nächsten Zahltag schon eingetragene Ausgaben
+          (z. B. Miete aus wiederkehrenden Vorlagen). Künftige Einnahmen
+          bleiben bewusst außen vor – sie könnten das nächste Gehalt sein.
+        - est_variable: Alltagsausgaben bis dahin, geschätzt aus dem Schnitt
+          der nicht wiederkehrenden Ausgaben der letzten 30 Tage, abzüglich
+          bereits eingetragener einmaliger Ausgaben in der Zeit.
+        - projected_leftover: voraussichtlich übrig am Tag vor dem Gehalt.
+        - suggestion: projected_leftover abzüglich Puffer (nie negativ) – so
+          viel kann voraussichtlich in den Notgroschen.
+        - daily_allowance: so viel pro Tag, um genau beim Puffer zu landen."""
+        payday = self.get_payday()
+        if not payday or self.get_starting_balance()[0] is None:
+            return None
+        today = today or datetime.date.today()
+        this_month = today.replace(day=payday)
+        if today < this_month:
+            next_pay, prev_pay = this_month, add_months(this_month, -1)
+        else:
+            prev_pay, next_pay = this_month, add_months(this_month, 1)
+        days_left = (next_pay - today).days
+        # Gesamtstand aller Konten zum Stichtag (ohne Notgroschen-Unterkonto)
+        balance = round(sum(self.get_account_balance(acc["id"], today) or 0.0
+                            for acc in self.list_accounts()), 2)
+        tomorrow, today_s, next_s = (today + datetime.timedelta(days=1)).isoformat(), \
+            today.isoformat(), next_pay.isoformat()
+
+        known_out, one_off_out = (float(v) for v in self.conn.execute(
+            "SELECT COALESCE(SUM(-amount), 0), "
+            "COALESCE(SUM(CASE WHEN recurring_template_id IS NULL THEN -amount ELSE 0 END), 0) "
+            "FROM transactions WHERE amount < 0 AND date >= ? AND date < ?",
+            (tomorrow, next_s)).fetchone())
+
+        first_row = self.conn.execute("SELECT MIN(date) FROM transactions").fetchone()[0]
+        window_start = today - datetime.timedelta(days=29)
+        if first_row:
+            window_start = max(window_start, datetime.date.fromisoformat(first_row))
+        window_days = max(1, (today - window_start).days + 1)
+        past_var = float(self.conn.execute(
+            "SELECT COALESCE(SUM(-amount), 0) FROM transactions WHERE amount < 0 "
+            "AND recurring_template_id IS NULL AND date >= ? AND date <= ?",
+            (window_start.isoformat(), today_s)).fetchone()[0])
+        avg_daily = past_var / window_days
+        est_variable = max(0.0, avg_daily * days_left - one_off_out)
+
+        cycle_expense = float(self.conn.execute(
+            "SELECT COALESCE(SUM(-amount), 0) FROM transactions WHERE amount < 0 "
+            "AND date >= ? AND date <= ?", (prev_pay.isoformat(), today_s)).fetchone()[0])
+
+        buffer = self.get_payday_buffer()
+        after_known = balance - known_out
+        leftover = after_known - est_variable
+        return {
+            "payday": payday, "today": today, "prev_payday": prev_pay, "next_payday": next_pay,
+            "days_left": days_left, "cycle_day": (today - prev_pay).days + 1,
+            "cycle_days": (next_pay - prev_pay).days,
+            "balance": balance, "known_out": round(known_out, 2),
+            "avg_daily": round(avg_daily, 2), "est_variable": round(est_variable, 2),
+            "projected_leftover": round(leftover, 2), "buffer": buffer,
+            "suggestion": round(max(0.0, leftover - buffer), 2),
+            "daily_allowance": round(max(0.0, (after_known - buffer) / max(1, days_left)), 2),
+            "on_track": leftover >= buffer, "cycle_expense": round(cycle_expense, 2),
+        }
+
     def list_months_with_transactions(self):
         """Alle Monate (YYYY-MM) mit mindestens einer Buchung bis zum laufenden
         Monat (künftige, z. B. aus wiederkehrenden Vorlagen, bleiben außen vor),
         neueste zuerst."""
-        current = datetime.date.today().strftime("%Y-%m")
-        return [r[0] for r in self.conn.execute(
-            "SELECT DISTINCT substr(date, 1, 7) AS m FROM transactions "
-            "WHERE substr(date, 1, 7) <= ? ORDER BY m DESC", (current,))]
+        current = self.current_period()
+        found = set()
+        for (d,) in self.conn.execute(
+                "SELECT DISTINCT date FROM transactions WHERE date <= ?",
+                (self.period_bounds(current)[1],)):
+            found.add(self.period_of(datetime.date.fromisoformat(d)))
+        return sorted((m for m in found if m <= current), reverse=True)
 
     def month_report_data(self, month):
         """Alle Zahlen für den PDF-Monatsbericht (YYYY-MM)."""
         summary = self.month_summary(month)
-        year, mon = int(month[:4]), int(month[5:7])
-        last_day = add_months(datetime.date(year, mon, 1), 1) - datetime.timedelta(days=1)
+        last_day = datetime.date.fromisoformat(self.period_bounds(month)[1]) - datetime.timedelta(days=1)
         biggest = [dict(r) for r in self.conn.execute("""
             SELECT t.date, t.amount, t.description, c.name AS category_name
             FROM transactions t JOIN categories c ON t.category_id = c.id
-            WHERE t.date LIKE ? AND t.amount < 0
-            ORDER BY t.amount ASC, t.date LIMIT 5""", (_month_pattern(month),))]
+            WHERE t.date >= ? AND t.date < ? AND t.amount < 0
+            ORDER BY t.amount ASC, t.date LIMIT 5""", self.period_bounds(month))]
         balance = None
         if self.get_starting_balance()[0] is not None:
             balance = 0.0
@@ -2516,6 +2661,10 @@ class FinanceStore:
             balance = round(balance, 2)
         return {
             "month": month, "summary": summary,
+            "period_start": self.period_bounds(month)[0],
+            "period_end": (datetime.date.fromisoformat(self.period_bounds(month)[1])
+                           - datetime.timedelta(days=1)).isoformat(),
+            "period_mode": self.get_period_mode(),
             "spending": [dict(r) for r in self.spending_by_category(month)],
             "income": [dict(r) for r in self.income_by_category(month)],
             "budgets": [r for r in self.budget_overview(month) if r["limit_amount"]],

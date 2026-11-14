@@ -179,8 +179,17 @@ def build_month_report(data, path, tr, fmt, month_names, today=None):
     doc.text(right, state["y"] + 6, tr("Erstellt am {0}").format(today.strftime("%d.%m.%Y")),
              9, color=MUTED, align="right")
     state["y"] += 36
-    doc.text(left, state["y"], "%s %d" % (month_names[mon - 1], year), 26, bold=True)
-    state["y"] += 28
+    if data.get("period_mode") == "cycle":
+        a = datetime.date.fromisoformat(data["period_start"])
+        b = datetime.date.fromisoformat(data["period_end"])
+        doc.text(left, state["y"], "%d.%d.-%d.%d.%d" % (a.day, a.month, b.day, b.month, b.year),
+                 26, bold=True)
+        state["y"] += 20
+        doc.text(left, state["y"], tr("Zeitraum von Zahltag zu Zahltag"), 10, color=MUTED)
+        state["y"] += 14
+    else:
+        doc.text(left, state["y"], "%s %d" % (month_names[mon - 1], year), 26, bold=True)
+        state["y"] += 28
 
     # Kennzahlen
     saved_color = GREEN if s["saved"] >= 0 else RED

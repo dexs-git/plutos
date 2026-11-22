@@ -38,7 +38,9 @@ def fetch_latest(timeout=4.0, opener=None):
         tag = str(data.get("tag_name") or "")
         if not tag or data.get("draft") or data.get("prerelease"):
             return None
-        return {"tag": tag, "url": data.get("html_url") or RELEASES_URL}
+        assets = [{"name": str(a.get("name") or ""), "url": str(a.get("browser_download_url") or "")}
+                  for a in data.get("assets") or [] if isinstance(a, dict)]
+        return {"tag": tag, "url": data.get("html_url") or RELEASES_URL, "assets": assets}
     except Exception:
         return None
 

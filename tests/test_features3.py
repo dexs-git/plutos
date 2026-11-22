@@ -93,14 +93,21 @@ def test_cashflow_estimate_does_not_double_count_known_one_offs(store):
     assert dec["other_out"] == 120.0 and dec["est_out"] == 180.0     # 300 Durchschnitt - 120 bekannt
 
 
+def add_months(d, n):
+    y, m = divmod(d.year * 12 + d.month - 1 + n, 12)
+    return datetime.date(y, m + 1, 1)
+
+
 def test_cashflow_first_negative_and_none_without_start(store):
     food = _cat(store, "Essen")
-    assert store.cashflow_forecast(3, today=datetime.date(2026, 11, 10)) is None
-    store.set_starting_balance(100.0, "2026-01-01")
+    today = datetime.date.today()          # der Kontostand wird zum echten Heute berechnet
+    assert store.cashflow_forecast(3, today=today) is None
+    store.set_starting_balance(100.0, "2020-01-01")
     rent = _cat(store, "Miete")
-    store.add_recurring_template(rent, -80.0, "Miete", "monatlich", "2026-11-15")
-    fc = store.cashflow_forecast(4, today=datetime.date(2026, 11, 10), include_estimate=False)
-    assert fc["first_negative"] == "2026-12"
+    first = add_months(today.replace(day=1), 1)
+    store.add_recurring_template(rent, -80.0, "Miete", "monatlich", first.replace(day=15).isoformat())
+    fc = store.cashflow_forecast(4, today=today, include_estimate=False)
+    assert fc["first_negative"] == add_months(first, 1).strftime("%Y-%m")
     assert fc["lowest"]["month"] == fc["months"][-1]["month"]
 
 
@@ -373,3 +380,97 @@ def test_period_dashboard_and_pending_summary_in_cycle(store):
     assert pend["month"] == "2026-10" and pend["expense"] == 160.0
     rep = store.month_report_data("2026-10")
     assert rep["period_start"] == "2026-10-15" and rep["period_end"] == "2026-11-14"
+
+
+# -- Sparbeiträge zählen nicht als Ausgabe, das Vermögen stimmt trotzdem ----------
+
+def test_savings_contribution_is_not_an_expense_but_wealth_is_right(store):
+    food = _cat(store, "Essen")
+    pay = _cat(store, "Gehalt", "einnahme")
+    today = datetime.date.today()
+    day = today.isoformat()
+    store.set_starting_balance(1000.0, "2020-01-01")
+    store.add_transaction(day, 2000.0, pay, "Gehalt")
+    store.add_transaction(day, -100.0, food, "Einkauf")
+    goal_id = store.add_goal("Notgroschen", 5000.0, None)
+    store.set_notgroschen_pocket(True)
+    before = store.get_balance_breakdown()["total"]
+    store.add_contribution(goal_id, day, 300.0, create_transaction=True, goal_name="Notgroschen")
+    bd = store.get_balance_breakdown()
+    assert bd["total"] == before                      # Gesamtvermögen unverändert
+    assert bd["giro"] == 2600.0 and bd["pocket"] == 300.0
+
+    month = today.strftime("%Y-%m")
+    names = [r["category_name"] for r in store.spending_by_category(month)]
+    assert "Sparbeitrag" not in names
+    s = store.month_summary(month)
+    assert s["expense"] == 100.0 and s["income"] == 2000.0
+    assert store.monthly_trend(1, month)[0]["expense"] == 100.0
+    assert store.dashboard_data(today)["expense_sofar"] == 100.0
+    assert store.year_summary(today.year)["expense"] == 100.0
+    assert store.yearly_overview(today.year)[today.month - 1]["expense"] == 100.0
+
+
+def test_savings_contribution_not_in_payday_cycle_spending(store):
+    food = _cat(store, "Essen")
+    today = datetime.date.today()
+    store.set_starting_balance(1000.0, (today - datetime.timedelta(days=60)).isoformat())
+    store.add_transaction((today - datetime.timedelta(days=2)).isoformat(), -30.0, food, "x")
+    store.set_payday(today.day if today.day <= 28 else 28)
+    base = store.payday_cycle(today)
+    goal_id = store.add_goal("Notgroschen", 5000.0, None)
+    store.add_contribution(goal_id, (today - datetime.timedelta(days=1)).isoformat(), 250.0,
+                           create_transaction=True, goal_name="Notgroschen")
+    after = store.payday_cycle(today)
+    assert after["cycle_expense"] == base["cycle_expense"]
+    assert after["avg_daily"] == base["avg_daily"]
+    assert after["balance"] == base["balance"] - 250.0     # das Girokonto sinkt trotzdem
+
+
+def test_savings_flag_survives_rename_and_old_backups(store, tmp_path):
+    food = _cat(store, "Essen")
+    today = datetime.date.today()
+    store.set_starting_balance(500.0, "2020-01-01")
+    goal_id = store.add_goal("Urlaub", 1000.0, None)
+    store.add_contribution(goal_id, today.isoformat(), 80.0, create_transaction=True, goal_name="Urlaub")
+    store.add_transaction(today.isoformat(), -20.0, food, "x")
+    cat = store.get_savings_category()
+    assert cat["name"] == "Sparbeitrag" and cat["is_savings"] == 1
+    store.update_category(cat["id"], "Zurückgelegt", cat["icon"])        # Umbenennen
+    store.add_contribution(goal_id, today.isoformat(), 10.0, create_transaction=True, goal_name="Urlaub")
+    assert store.get_savings_category()["name"] == "Zurückgelegt"          # keine zweite Kategorie
+    assert store.month_summary(today.strftime("%Y-%m"))["expense"] == 20.0
+    # eigene Kategorie als „Sparen“ markieren
+    etf = _cat(store, "ETF-Sparplan")
+    store.add_transaction(today.isoformat(), -50.0, etf, "ETF")
+    assert store.month_summary(today.strftime("%Y-%m"))["expense"] == 70.0
+    store.set_category_savings(etf, True)
+    assert store.month_summary(today.strftime("%Y-%m"))["expense"] == 20.0
+
+    # Backup aus älterer Version (ohne is_savings-Spalte) wird anhand des Namens markiert
+    import json
+    path = tmp_path / "old.json"
+    path.write_text(json.dumps({
+        "categories": [{"id": 1, "name": "Sparbeitrag", "kind": "ausgabe", "icon": "💰"},
+                       {"id": 2, "name": "Essen", "kind": "ausgabe", "icon": "🍽"}],
+        "transactions": [{"id": 1, "date": today.isoformat(), "amount": -40.0, "category_id": 1,
+                          "description": "s", "recurring_template_id": None},
+                         {"id": 2, "date": today.isoformat(), "amount": -5.0, "category_id": 2,
+                          "description": "e", "recurring_template_id": None}]}))
+    store.import_backup_json(str(path))
+    assert store.month_summary(today.strftime("%Y-%m"))["expense"] == 5.0
+
+
+def test_backup_label_and_low_history_hint(store):
+    path = store.create_db_backup(force=True, label="vor-Update")
+    assert path.name.endswith("-vor-Update.db") and path.exists()
+    today = datetime.date.today()
+    store.set_starting_balance(500.0, (today - datetime.timedelta(days=3)).isoformat())
+    food = _cat(store, "Essen")
+    store.add_transaction((today - datetime.timedelta(days=3)).isoformat(), -10.0, food, "x")
+    store.set_payday(15)
+    pc = store.payday_cycle(today)
+    assert pc["low_history"] and pc["history_days"] == 4
+    store.add_transaction((today - datetime.timedelta(days=40)).isoformat(), -10.0, food, "alt")
+    pc = store.payday_cycle(today)
+    assert not pc["low_history"] and pc["history_days"] == 30

@@ -46,6 +46,7 @@ import threading
 from db import FinanceStore, add_months, DATA_DIR, year_summary_lines
 import sync_tools
 import update_check
+import self_update
 import report_pdf
 from version import APP_VERSION
 import theme
@@ -511,6 +512,9 @@ class MainWindow(Gtk.Window):
             tr('Seit dem letzten Gehalt ausgegeben: {0} (Tag {1} von {2}).').format(
                 fmt_amount(pc["cycle_expense"]), pc["cycle_day"], pc["cycle_days"]),
             "kpi-sub", wrap=True), False, False, 0)
+        if pc.get("low_history"):
+            lay.pack_start(theme.make_label(
+                tr('Hinweis: Die Schätzung für den Alltag beruht erst auf {0} Tagen Buchungen und ist noch ungenau.').format(pc["history_days"]), "kpi-sub", wrap=True), False, False, 0)
         return card
 
     def _month_summary_card(self, sm):
@@ -640,9 +644,15 @@ class MainWindow(Gtk.Window):
         dialog.add_button(tr('Später'), Gtk.ResponseType.CANCEL)
         dialog.add_button(tr('Diese Version überspringen'), Gtk.ResponseType.REJECT)
         dialog.add_button(tr('Zur Download-Seite'), Gtk.ResponseType.ACCEPT)
+        can_install = self_update.can_self_update(found)
+        if can_install:
+            dialog.add_button(tr('Jetzt aktualisieren'), Gtk.ResponseType.APPLY)
+            dialog.set_default_response(Gtk.ResponseType.APPLY)
         response = dialog.run()
         dialog.destroy()
-        if response == Gtk.ResponseType.ACCEPT:
+        if response == Gtk.ResponseType.APPLY:
+            self._start_self_update(found)
+        elif response == Gtk.ResponseType.ACCEPT:
             try:
                 Gtk.show_uri_on_window(self, found["url"], Gdk.CURRENT_TIME)
             except Exception as exc:
@@ -650,6 +660,69 @@ class MainWindow(Gtk.Window):
         elif response == Gtk.ResponseType.REJECT:
             self.sync_cfg.update_skipped = found["tag"]
             self.sync_cfg.save()
+        return False
+
+    def _start_self_update(self, found):
+        """Lädt und installiert das Update im Hintergrund (mit Fortschrittsfenster)."""
+        try:  # erst die Datenbank sichern – im Hauptthread, dort liegt die Verbindung
+            self.store.create_db_backup(force=True, label="vor-Update")
+        except Exception as exc:
+            d = Gtk.MessageDialog(transient_for=self, flags=0, message_type=Gtk.MessageType.WARNING,
+                                  buttons=Gtk.ButtonsType.OK, text=tr('Aktualisieren'),
+                                  secondary_text=tr('Die Sicherung der Datenbank vor dem Update ist fehlgeschlagen – das Update wurde nicht gestartet. ({0})').format(exc))
+            d.run()
+            d.destroy()
+            return
+        win = Gtk.Window(transient_for=self, modal=True, title=tr('Aktualisieren'),
+                         default_width=360, deletable=False)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin=18)
+        box.pack_start(Gtk.Label(
+            label=tr('Plutos {0} wird geladen …').format(found["tag"].lstrip("v"))), False, False, 0)
+        bar = Gtk.ProgressBar()
+        box.pack_start(bar, False, False, 0)
+        win.add(box)
+        win.show_all()
+        state = {"pulse": True}
+
+        def pulse():
+            if state["pulse"]:
+                bar.pulse()
+            return win.get_visible()
+        GLib.timeout_add(120, pulse)
+
+        def progress(done, total):
+            if total > 0:
+                state["pulse"] = False
+                GLib.idle_add(bar.set_fraction, min(0.99, done / total))
+
+        def work():
+            try:
+                result = self_update.apply_update(found, progress=progress)
+            except Exception as exc:
+                result = {"error": str(exc)}
+            GLib.idle_add(self._on_update_finished, win, result)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_update_finished(self, win, result):
+        win.destroy()
+
+        def info(text, kind=Gtk.MessageType.INFO):
+            d = Gtk.MessageDialog(transient_for=self, flags=0, message_type=kind,
+                                  buttons=Gtk.ButtonsType.OK, text=tr('Aktualisieren'),
+                                  secondary_text=text)
+            d.run()
+            d.destroy()
+        if result.get("error"):
+            info(tr('Das Update ist fehlgeschlagen:') + "\n" + tr(result["error"]), Gtk.MessageType.WARNING)
+        elif result.get("manual"):
+            info(tr('Das neue Image wurde geöffnet. Ziehe Plutos in den Ordner „Programme“, um die alte Version zu ersetzen.'))
+        elif result.get("quit"):
+            info(tr('Der Installer startet jetzt. Plutos wird dafür beendet.'))
+            Gtk.main_quit()
+        else:
+            info(tr('Plutos wurde aktualisiert und startet jetzt neu.'))
+            self_update.restart(result)
+            Gtk.main_quit()
         return False
 
     def _dismiss_month_summary(self, month):
@@ -3331,6 +3404,10 @@ class MainWindow(Gtk.Window):
         info.set_max_width_chars(10)
         box.pack_start(info, False, False, 0)
 
+        self.budget_period_label = theme.make_label("", "kpi-sub", wrap=True)
+        self.budget_period_label.set_no_show_all(True)
+        box.pack_start(self.budget_period_label, False, False, 0)
+
         scroller = Gtk.ScrolledWindow()
         box.pack_start(scroller, True, True, 0)
 
@@ -3382,6 +3459,11 @@ class MainWindow(Gtk.Window):
     def _refresh_budgets_tab(self):
         self.budget_store.clear()
         month_str = self._selected_calendar_month().strftime("%Y-%m")
+        cycle = self.store.get_period_mode() == "cycle"
+        if cycle:
+            self.budget_period_label.set_text(
+                tr('Im Zahltag-Zyklus-Modus gilt das Budget des gewählten Monats für den Zyklus, der in diesem Monat am Zahltag beginnt: {0}.').format(period_text(self.store, month_str)))
+        self.budget_period_label.set_visible(cycle)
         for r in self.store.budget_overview(month_str):
             limit_amount = r["limit_amount"]
             spent = r["spent"]
@@ -3535,7 +3617,9 @@ class MainWindow(Gtk.Window):
         goal_id = model.get_value(tree_iter, 0)
         goal_name = model.get_value(tree_iter, 1)
 
-        dialog = ContributionDialog(self, goal_name)
+        dialog = ContributionDialog(
+            self, goal_name,
+            pocket_goal=self.store.notgroschen_pocket_enabled() and goal_name == "Notgroschen")
         book_as_transaction = False
         if dialog.run() == Gtk.ResponseType.OK:
             amount = dialog.get_amount()
@@ -7131,7 +7215,7 @@ class GoalDialog(FormDialog):
 
 
 class ContributionDialog(FormDialog):
-    def __init__(self, parent, goal_name):
+    def __init__(self, parent, goal_name, pocket_goal=False):
         super().__init__(parent, tr('Einzahlen: {0}').format(goal_name))
         grid = self.grid
 
@@ -7151,12 +7235,20 @@ class ContributionDialog(FormDialog):
 
         hint = Gtk.Label(
             xalign=0,
-            label=tr('Damit taucht die Einzahlung als Ausgabe im Kalender, in Budgets und Auswertungen auf – so wie das Geld tatsächlich vom Konto abgeht. Zum rein informativen Vormerken (z. B. externes Depot) kannst du das Häkchen entfernen.'),
+            label=tr('Die Buchung senkt deinen Kontostand und erscheint im Kalender, zählt aber nicht als Ausgabe in Saldo, Ausgabentempo und Auswertungen. Zum rein informativen Vormerken (z. B. externes Depot) kannst du das Häkchen entfernen.'),
         )
         hint.set_line_wrap(True)
         grid.attach(hint, 0, 2, 2, 1)
 
+        # Notgroschen-Unterkonto aktiv: ohne Buchung würde das Vermögen doppelt gezählt
+        self.pocket_warning = Gtk.Label(xalign=0, label=tr('Achtung: Ohne Buchung sinkt das Girokonto nicht, das Notgroschen-Unterkonto wächst aber – dein Gesamtvermögen würde um diesen Betrag zu hoch angezeigt.'))
+        self.pocket_warning.set_line_wrap(True)
+        self.pocket_warning.set_markup('<span foreground="#c0392b">%s</span>' % GLib.markup_escape_text(self.pocket_warning.get_text()))
+        grid.attach(self.pocket_warning, 0, 3, 2, 1)
         self.show_all()
+        self.pocket_warning.set_visible(False)
+        if pocket_goal:
+            self.book_check.connect("toggled", lambda w: self.pocket_warning.set_visible(not w.get_active()))
 
     def get_book_as_transaction(self):
         return self.book_check.get_active()

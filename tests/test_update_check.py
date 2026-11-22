@@ -52,3 +52,10 @@ def test_check_for_update(uc):
     def boom(request, timeout=None):
         raise OSError("kein Netz")
     assert uc.check_for_update("1.2.0", opener=boom) is None
+
+
+def test_fetch_latest_lists_assets(uc):
+    payload = {"tag_name": "v1.3.0", "html_url": "https://example/x",
+               "assets": [{"name": "Plutos-Setup.exe", "browser_download_url": "https://example/s.exe"}]}
+    found = uc.check_for_update("1.2.0", opener=_opener(payload))
+    assert found["assets"] == [{"name": "Plutos-Setup.exe", "url": "https://example/s.exe"}]

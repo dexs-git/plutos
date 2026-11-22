@@ -218,6 +218,7 @@ class FinanceStore:
         existing_cat_cols = {row["name"] for row in c.execute("PRAGMA table_info(categories)")}
         if "icon" not in existing_cat_cols:
             c.execute(f"ALTER TABLE categories ADD COLUMN icon TEXT NOT NULL DEFAULT '{DEFAULT_ICON}'")
+        self._ensure_savings_flag(commit=False)
 
         existing_etf_cols = {row["name"] for row in c.execute("PRAGMA table_info(etf_plans)")}
         if "annual_increase_percent" not in existing_etf_cols:
@@ -287,6 +288,35 @@ class FinanceStore:
         )
         self.conn.commit()
         return cur.lastrowid
+
+    def _ensure_savings_flag(self, commit=True):
+        """Spalte `is_savings` (Kategorie zählt als Sparen, nicht als Ausgabe) anlegen.
+        Eine vorhandene Kategorie „Sparbeitrag“ wird einmalig markiert – danach
+        bleibt die Markierung auch nach einer Umbenennung erhalten."""
+        cols = {row["name"] for row in self.conn.execute("PRAGMA table_info(categories)")}
+        if "is_savings" not in cols:
+            self.conn.execute("ALTER TABLE categories ADD COLUMN is_savings INTEGER NOT NULL DEFAULT 0")
+        if self.conn.execute("SELECT 1 FROM categories WHERE is_savings = 1").fetchone() is None:
+            self.conn.execute("UPDATE categories SET is_savings = 1 WHERE name = 'Sparbeitrag'")
+        if commit:
+            self.conn.commit()
+
+    def get_savings_category(self):
+        """Die Kategorie für Einzahlungen auf Sparziele (wird bei Bedarf angelegt)."""
+        row = self.conn.execute(
+            "SELECT * FROM categories WHERE is_savings = 1 ORDER BY id LIMIT 1").fetchone()
+        if row:
+            return row
+        cat = self.get_or_create_category("Sparbeitrag", "ausgabe", "💰")
+        self.conn.execute("UPDATE categories SET is_savings = 1 WHERE id = ?", (cat["id"],))
+        self.conn.commit()
+        return self.conn.execute("SELECT * FROM categories WHERE id = ?", (cat["id"],)).fetchone()
+
+    def set_category_savings(self, category_id, is_savings):
+        """Markiert eine Kategorie als „Sparen“ (zählt dann nicht als Ausgabe)."""
+        self.conn.execute("UPDATE categories SET is_savings = ? WHERE id = ?",
+                          (1 if is_savings else 0, category_id))
+        self.conn.commit()
 
     def get_or_create_category(self, name, kind, icon):
         """Liefert eine Kategorie mit diesem Namen, legt sie bei Bedarf an.
@@ -952,7 +982,7 @@ class FinanceStore:
         self.conn.commit()
 
         if create_transaction:
-            category = self.get_or_create_category("Sparbeitrag", "ausgabe", "💰")
+            category = self.get_savings_category()
             description = f"Einzahlung Sparziel: {goal_name}" if goal_name else "Einzahlung Sparziel"
             self.add_transaction(date, -amount, category["id"], description)
 
@@ -1303,6 +1333,7 @@ class FinanceStore:
             SELECT c.name AS category_name, c.icon, -SUM(t.amount) AS total
             FROM transactions t JOIN categories c ON t.category_id = c.id
             WHERE c.kind = 'ausgabe' AND t.date >= ? AND t.date < ? AND t.amount < 0
+              AND c.is_savings = 0
             GROUP BY c.id
             ORDER BY total DESC
         """, self.period_bounds(month))
@@ -1340,7 +1371,7 @@ class FinanceStore:
             cur = self.conn.execute("""
                 SELECT
                     COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END), 0) AS income,
-                    COALESCE(SUM(CASE WHEN amount < 0 THEN -amount ELSE 0 END), 0) AS expense
+                    COALESCE(SUM(CASE WHEN amount < 0 AND category_id NOT IN (SELECT id FROM categories WHERE is_savings = 1) THEN -amount ELSE 0 END), 0) AS expense
                 FROM transactions WHERE date >= ? AND date < ?
             """, self.period_bounds(month))
             row = cur.fetchone()
@@ -1353,7 +1384,7 @@ class FinanceStore:
         cur = self.conn.execute("""
             SELECT substr(date, 1, 7) AS month,
                    COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END), 0) AS income,
-                   COALESCE(SUM(CASE WHEN amount < 0 THEN -amount ELSE 0 END), 0) AS expense
+                   COALESCE(SUM(CASE WHEN amount < 0 AND category_id NOT IN (SELECT id FROM categories WHERE is_savings = 1) THEN -amount ELSE 0 END), 0) AS expense
             FROM transactions WHERE date LIKE ?
             GROUP BY month
         """, (f"{year:04d}-%",))
@@ -1431,7 +1462,7 @@ class FinanceStore:
         cur = self.conn.execute("""
             SELECT DISTINCT c.name AS category_name, c.icon
             FROM transactions t JOIN categories c ON t.category_id = c.id
-            WHERE c.kind = 'ausgabe' AND t.amount < 0 AND t.date LIKE ?
+            WHERE c.kind = 'ausgabe' AND t.amount < 0 AND t.date LIKE ? AND c.is_savings = 0
             ORDER BY c.name COLLATE NOCASE
         """, (f"{year:04d}-%",))
         return cur.fetchall()
@@ -1442,7 +1473,7 @@ class FinanceStore:
         sql = """
             SELECT CAST(substr(t.date, 6, 2) AS INTEGER) AS m, -SUM(t.amount) AS total
             FROM transactions t JOIN categories c ON t.category_id = c.id
-            WHERE c.kind = 'ausgabe' AND t.amount < 0 AND t.date LIKE ?
+            WHERE c.kind = 'ausgabe' AND t.amount < 0 AND t.date LIKE ? AND c.is_savings = 0
         """
         params = [f"{year:04d}-%"]
         if category_name is not None:
@@ -1458,19 +1489,21 @@ class FinanceStore:
     def backup_dir(self):
         return self.db_path.parent / "backups"
 
-    def create_db_backup(self, force=False):
+    def create_db_backup(self, force=False, label=""):
         """Sichert die komplette Datenbank als Kopie nach <Datenordner>/backups/.
 
         Ohne `force` wird höchstens ein Backup pro Tag angelegt (gedacht für
         den automatischen Aufruf beim Programmstart). Es werden nur die
         letzten BACKUP_KEEP Backups behalten. Gibt den Pfad der neuen Datei
-        zurück oder None, wenn heute schon gesichert wurde."""
+        zurück oder None, wenn heute schon gesichert wurde. `label` (z. B.
+        „vor-Update“) wird an den Dateinamen angehängt."""
         self.backup_dir.mkdir(parents=True, exist_ok=True)
         today = datetime.date.today().strftime("%Y%m%d")
         if not force and any(self.backup_dir.glob(f"finanzen-{today}-*.db")):
             return None
         stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        target = self.backup_dir / f"finanzen-{stamp}.db"
+        suffix = re.sub(r"[^A-Za-z0-9._-]+", "-", label).strip("-")
+        target = self.backup_dir / (f"finanzen-{stamp}-{suffix}.db" if suffix else f"finanzen-{stamp}.db")
         dest = sqlite3.connect(str(target))
         try:
             self.conn.backup(dest)  # konsistent, auch bei offener Verbindung
@@ -1762,7 +1795,7 @@ class FinanceStore:
 
         def sums(upto=None):
             sql = ("SELECT COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END), 0) AS income, "
-                   "COALESCE(SUM(CASE WHEN amount < 0 THEN -amount ELSE 0 END), 0) AS expense "
+                   "COALESCE(SUM(CASE WHEN amount < 0 AND category_id NOT IN (SELECT id FROM categories WHERE is_savings = 1) THEN -amount ELSE 0 END), 0) AS expense "
                    "FROM transactions WHERE date >= ? AND date < ?")
             params = [p_start, p_end]
             if upto:
@@ -1785,7 +1818,7 @@ class FinanceStore:
                 m = add_months(first, -back).strftime("%Y-%m")
                 row = self.conn.execute(
                     "SELECT COALESCE(SUM(-amount), 0) AS e FROM transactions "
-                    "WHERE date >= ? AND date < ? AND amount < 0", self.period_bounds(m)).fetchone()
+                    "WHERE date >= ? AND date < ? AND amount < 0 AND category_id NOT IN (SELECT id FROM categories WHERE is_savings = 1)", self.period_bounds(m)).fetchone()
                 if row["e"] > 0:
                     previous.append(float(row["e"]))
             if previous:
@@ -1928,7 +1961,7 @@ class FinanceStore:
         def sums(m):
             row = self.conn.execute(
                 "SELECT COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END), 0) AS income, "
-                "COALESCE(SUM(CASE WHEN amount < 0 THEN -amount ELSE 0 END), 0) AS expense, "
+                "COALESCE(SUM(CASE WHEN amount < 0 AND category_id NOT IN (SELECT id FROM categories WHERE is_savings = 1) THEN -amount ELSE 0 END), 0) AS expense, "
                 "COUNT(*) AS n FROM transactions WHERE date >= ? AND date < ?",
                 self.period_bounds(m)).fetchone()
             return row["income"], row["expense"], row["n"]
@@ -1982,7 +2015,7 @@ class FinanceStore:
         def sums(y):
             row = self.conn.execute(
                 "SELECT COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END), 0) AS income, "
-                "COALESCE(SUM(CASE WHEN amount < 0 THEN -amount ELSE 0 END), 0) AS expense, "
+                "COALESCE(SUM(CASE WHEN amount < 0 AND category_id NOT IN (SELECT id FROM categories WHERE is_savings = 1) THEN -amount ELSE 0 END), 0) AS expense, "
                 "COUNT(*) AS n FROM transactions WHERE date LIKE ?", (f"{y:04d}-%",)).fetchone()
             return row["income"], row["expense"], row["n"]
 
@@ -1992,7 +2025,7 @@ class FinanceStore:
         for r in self.conn.execute(
                 "SELECT SUBSTR(date, 6, 2) AS m, "
                 "COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END), 0) AS income, "
-                "COALESCE(SUM(CASE WHEN amount < 0 THEN -amount ELSE 0 END), 0) AS expense "
+                "COALESCE(SUM(CASE WHEN amount < 0 AND category_id NOT IN (SELECT id FROM categories WHERE is_savings = 1) THEN -amount ELSE 0 END), 0) AS expense "
                 "FROM transactions WHERE date LIKE ? GROUP BY m ORDER BY m", (f"{year:04d}-%",)):
             monthly.append({"month": int(r["m"]), "income": r["income"], "expense": r["expense"],
                             "saved": r["income"] - r["expense"]})
@@ -2001,7 +2034,7 @@ class FinanceStore:
                for r in self.conn.execute(
                    "SELECT c.name AS name, c.icon AS icon, SUM(-t.amount) AS total "
                    "FROM transactions t JOIN categories c ON t.category_id = c.id "
-                   "WHERE t.date LIKE ? AND t.amount < 0 GROUP BY c.id "
+                   "WHERE t.date LIKE ? AND t.amount < 0 AND c.is_savings = 0 GROUP BY c.id "
                    "ORDER BY total DESC LIMIT 3", (f"{year:04d}-%",))]
         to_goals = self.conn.execute(
             "SELECT COALESCE(SUM(amount), 0) FROM savings_contributions WHERE date LIKE ? AND amount > 0",
@@ -2607,14 +2640,14 @@ class FinanceStore:
         window_days = max(1, (today - window_start).days + 1)
         past_var = float(self.conn.execute(
             "SELECT COALESCE(SUM(-amount), 0) FROM transactions WHERE amount < 0 "
-            "AND recurring_template_id IS NULL AND date >= ? AND date <= ?",
+            "AND recurring_template_id IS NULL AND date >= ? AND date <= ? AND category_id NOT IN (SELECT id FROM categories WHERE is_savings = 1)",
             (window_start.isoformat(), today_s)).fetchone()[0])
         avg_daily = past_var / window_days
         est_variable = max(0.0, avg_daily * days_left - one_off_out)
 
         cycle_expense = float(self.conn.execute(
             "SELECT COALESCE(SUM(-amount), 0) FROM transactions WHERE amount < 0 "
-            "AND date >= ? AND date <= ?", (prev_pay.isoformat(), today_s)).fetchone()[0])
+            "AND date >= ? AND date <= ? AND category_id NOT IN (SELECT id FROM categories WHERE is_savings = 1)", (prev_pay.isoformat(), today_s)).fetchone()[0])
 
         buffer = self.get_payday_buffer()
         after_known = balance - known_out
@@ -2629,6 +2662,8 @@ class FinanceStore:
             "suggestion": round(max(0.0, leftover - buffer), 2),
             "daily_allowance": round(max(0.0, (after_known - buffer) / max(1, days_left)), 2),
             "on_track": leftover >= buffer, "cycle_expense": round(cycle_expense, 2),
+            # Wie viele Tage Buchungshistorie in die Alltagsschätzung eingehen
+            "history_days": window_days, "low_history": window_days < 14,
         }
 
     def list_months_with_transactions(self):
@@ -2650,7 +2685,7 @@ class FinanceStore:
         biggest = [dict(r) for r in self.conn.execute("""
             SELECT t.date, t.amount, t.description, c.name AS category_name
             FROM transactions t JOIN categories c ON t.category_id = c.id
-            WHERE t.date >= ? AND t.date < ? AND t.amount < 0
+            WHERE t.date >= ? AND t.date < ? AND t.amount < 0 AND c.is_savings = 0
             ORDER BY t.amount ASC, t.date LIMIT 5""", self.period_bounds(month))]
         balance = None
         if self.get_starting_balance()[0] is not None:
@@ -2738,4 +2773,5 @@ class FinanceStore:
         c.execute("PRAGMA foreign_keys = ON")
         c.commit()
         self._ensure_account_tables()
+        self._ensure_savings_flag()
         self._generated_horizon = None

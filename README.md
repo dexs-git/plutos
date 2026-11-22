@@ -85,6 +85,16 @@ Datenbank-Logik teilen:
 - **Zahltag** (Finanzplanung): Wer sein Gehalt z. B. zum 15. bekommt, sieht auf der
   Übersicht „Bis zum nächsten Gehalt“ – Resttage, voraussichtlich Übriges, Tagesspielraum
   und wie viel davon (nach einem einstellbaren Puffer) in den Notgroschen kann
+- **Sparbeiträge sind keine Ausgaben**: Einzahlungen auf Sparziele (Kategorie „Sparbeitrag“) zählen
+  nicht zu Ausgaben, Saldo, Ausgabentempo, Zahltag-Zyklus, Monats-/Jahresabschluss und Berichten.
+  Die Markierung hängt an der Kategorie, nicht am Namen – Umbenennen ist möglich.
+  Das Girokonto sinkt trotzdem, und mit Notgroschen-Unterkonto bleibt das Gesamtvermögen korrekt
+- **Selbst-Update**: Findet Plutos beim Start eine neuere Version auf GitHub, genügt ein
+  Klick auf „Jetzt aktualisieren“. Bei der Installation per Skript werden die
+  Programmdateien des Release geladen, auf Fehler geprüft und ersetzt (die alten bleiben in
+  `.update-backup`), danach startet Plutos neu; beim AppImage wird die Datei ersetzt, unter
+  Windows startet der neue Installer, unter macOS öffnet sich das neue dmg. Deine Daten
+  bleiben unberührt und werden vorher automatisch gesichert (Ordner `backups`). Abschaltbar unter „Export / Import“.
 - **Auswertungszeitraum** (Finanzplanung → Zahltag): Standard ist der Kalendermonat.
   Wer „Zahltag-Zyklus“ wählt, bekommt Ausgabentempo, Monatsabschluss, Budgets,
   Auswertungen und PDF-Bericht von Zahltag zu Zahltag (z. B. 15.10.–14.11.).

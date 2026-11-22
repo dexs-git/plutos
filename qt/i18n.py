@@ -1304,3 +1304,39 @@ EN.update({
     'Tag {0} von {1}: {2} % des Zyklus sind vorbei, {3} % {4} ausgegeben.': 'Day {0} of {1}: {2} % of the cycle is over, {3} % {4} spent.',
     'Budgets im Zyklus': 'Budgets this cycle',
 })
+
+EN.update({
+    'Jetzt aktualisieren': 'Update now',
+    'Aktualisieren': 'Update',
+    'Plutos {0} wird geladen …': 'Downloading Plutos {0} …',
+    'Das Update ist fehlgeschlagen:': 'The update failed:',
+    'Das neue Image wurde geöffnet. Ziehe Plutos in den Ordner „Programme“, um die alte Version zu ersetzen.': 'The new disk image has been opened. Drag Plutos into the “Applications” folder to replace the old version.',
+    'Der Installer startet jetzt. Plutos wird dafür beendet.': 'The installer is starting now. Plutos will close for it.',
+    'Plutos wurde aktualisiert und startet jetzt neu.': 'Plutos has been updated and is restarting.',
+    'Diese Installation kann sich nicht selbst aktualisieren': 'This installation cannot update itself',
+    'Im Release gibt es keine AppImage-Datei': 'The release has no AppImage file',
+    'Im Release gibt es keinen Windows-Installer': 'The release has no Windows installer',
+    'Im Release gibt es keine dmg-Datei': 'The release has no dmg file',
+    'Die Datei ist ungewöhnlich groß – Abbruch': 'The file is unusually large – aborting',
+    'Unerwartete Versionsbezeichnung': 'Unexpected version name',
+    'Nur HTTPS-Adressen werden geladen': 'Only HTTPS addresses are downloaded',
+})
+
+EN.update({
+    'Die Buchung senkt deinen Kontostand und erscheint im Kalender, zählt aber nicht als Ausgabe in Saldo, Ausgabentempo und Auswertungen. Zum rein informativen Vormerken (z. B. externes Depot) kannst du das Häkchen entfernen.':
+        'The booking lowers your account balance and appears in the calendar, but does not count as an expense in balance, spending pace and statistics. For purely informational tracking (e.g. an external brokerage account) you can untick it.',
+    'Achtung: Ohne Buchung sinkt das Girokonto nicht, das Notgroschen-Unterkonto wächst aber – dein Gesamtvermögen würde um diesen Betrag zu hoch angezeigt.':
+        'Warning: without a booking the current account does not decrease, but the emergency-fund sub-account grows – your total wealth would be shown too high by this amount.',
+})
+
+EN.update({
+    'Im Zahltag-Zyklus-Modus gilt das Budget des gewählten Monats für den Zyklus, der in diesem Monat am Zahltag beginnt: {0}.':
+        'In payday-cycle mode the budget of the selected month applies to the cycle that starts on payday in that month: {0}.',
+    'Hinweis: Die Schätzung für den Alltag beruht erst auf {0} Tagen Buchungen und ist noch ungenau.':
+        'Note: the estimate for everyday spending is based on only {0} days of bookings so far and is still imprecise.',
+})
+
+EN.update({
+    'Die Sicherung der Datenbank vor dem Update ist fehlgeschlagen – das Update wurde nicht gestartet. ({0})':
+        'Backing up the database before the update failed – the update was not started. ({0})',
+})

@@ -30,6 +30,7 @@ from pathlib import Path
 import re
 
 from PySide6.QtWidgets import (
+    QProgressDialog,
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QTabWidget, QLabel, QPushButton, QComboBox, QDoubleSpinBox, QSpinBox,
     QCheckBox, QLineEdit, QTableWidget, QTableWidgetItem, QHeaderView,
@@ -45,6 +46,7 @@ from PySide6.QtGui import QIcon, QColor, QTextCharFormat, QPalette, QShortcut, Q
 from db import FinanceStore, add_months, DATA_DIR, year_summary_lines
 import sync_tools
 import update_check
+import self_update
 import report_pdf
 from version import APP_VERSION
 from i18n import tr, set_language, get_language, LANGUAGES, months, months_short, weekdays, weekdays_short
@@ -126,6 +128,8 @@ class PageTabs(QTabWidget):
 
 class MainWindow(QMainWindow):
     update_found = Signal(object)   # aus dem Hintergrund-Thread der Update-Prüfung
+    update_progress = Signal(int, int)
+    update_finished = Signal(object)
 
     def __init__(self):
         super().__init__()
@@ -373,6 +377,11 @@ class MainWindow(QMainWindow):
         note.setObjectName("kpiSub")
         note.setWordWrap(True)
         lay.addWidget(note)
+        if pc.get("low_history"):
+            warn = QLabel(tr('Hinweis: Die Schätzung für den Alltag beruht erst auf {0} Tagen Buchungen und ist noch ungenau.').format(pc["history_days"]))
+            warn.setObjectName("kpiSub")
+            warn.setWordWrap(True)
+            lay.addWidget(warn)
         lay.addStretch()
         return card
 
@@ -504,16 +513,81 @@ class MainWindow(QMainWindow):
         box.setWindowTitle(tr('Neue Version verfügbar'))
         box.setIcon(QMessageBox.Information)
         box.setText(tr('Plutos {0} ist erschienen (installiert: {1}).').format(found["tag"].lstrip("v"), APP_VERSION))
-        open_btn = box.addButton(tr('Zur Download-Seite'), QMessageBox.AcceptRole)
+        install_btn = None
+        if self_update.can_self_update(found):
+            install_btn = box.addButton(tr('Jetzt aktualisieren'), QMessageBox.AcceptRole)
+            box.setDefaultButton(install_btn)
+        open_btn = box.addButton(tr('Zur Download-Seite'), QMessageBox.ActionRole)
         skip_btn = box.addButton(tr('Diese Version überspringen'), QMessageBox.DestructiveRole)
         box.addButton(tr('Später'), QMessageBox.RejectRole)
         box.exec()
         clicked = box.clickedButton()
         if clicked is open_btn:
             QDesktopServices.openUrl(QUrl(found["url"]))
+        elif install_btn is not None and clicked is install_btn:
+            self._start_self_update(found)
         elif clicked is skip_btn:
             self.sync_cfg.update_skipped = found["tag"]
             self.sync_cfg.save()
+
+    def _start_self_update(self, found):
+        """Lädt und installiert das Update im Hintergrund (mit Fortschrittsdialog)."""
+        try:  # erst die Datenbank sichern – im Hauptthread, dort liegt die Verbindung
+            self.store.create_db_backup(force=True, label="vor-Update")
+        except Exception as exc:
+            QMessageBox.warning(self, tr('Aktualisieren'), tr('Die Sicherung der Datenbank vor dem Update ist fehlgeschlagen – das Update wurde nicht gestartet. ({0})').format(exc))
+            return
+        self._update_dialog = QProgressDialog(
+            tr('Plutos {0} wird geladen …').format(found["tag"].lstrip("v")), "", 0, 0, self)
+        self._update_dialog.setWindowTitle(tr('Aktualisieren'))
+        self._update_dialog.setCancelButton(None)
+        self._update_dialog.setMinimumDuration(0)
+        self._update_dialog.setWindowModality(Qt.WindowModal)
+        self._update_dialog.show()
+        self.update_progress.connect(self._on_update_progress)
+        self.update_finished.connect(self._on_update_finished)
+
+        def work():
+            try:
+                result = self_update.apply_update(
+                    found, progress=lambda done, total: self.update_progress.emit(done, total))
+            except self_update.UpdateError as exc:
+                result = {"error": str(exc)}
+            except Exception as exc:
+                result = {"error": str(exc)}
+            self.update_finished.emit(result)
+        threading.Thread(target=work, daemon=True).start()
+
+    @Slot(int, int)
+    def _on_update_progress(self, done, total):
+        dialog = getattr(self, "_update_dialog", None)
+        if dialog is not None and total > 0:
+            dialog.setMaximum(100)
+            dialog.setValue(min(99, int(done * 100 / total)))
+
+    @Slot(object)
+    def _on_update_finished(self, result):
+        dialog = getattr(self, "_update_dialog", None)
+        if dialog is not None:
+            dialog.close()
+        if result.get("error"):
+            QMessageBox.warning(self, tr('Aktualisieren'),
+                                tr('Das Update ist fehlgeschlagen:') + "\n" + tr(result["error"]))
+            return
+        if result.get("manual"):
+            QMessageBox.information(
+                self, tr('Aktualisieren'),
+                tr('Das neue Image wurde geöffnet. Ziehe Plutos in den Ordner „Programme“, um die alte Version zu ersetzen.'))
+            return
+        if result.get("quit"):
+            QMessageBox.information(self, tr('Aktualisieren'),
+                                    tr('Der Installer startet jetzt. Plutos wird dafür beendet.'))
+            QApplication.quit()
+            return
+        QMessageBox.information(self, tr('Aktualisieren'),
+                                tr('Plutos wurde aktualisiert und startet jetzt neu.'))
+        self_update.restart(result)
+        QApplication.quit()
 
     def _dismiss_month_summary(self, month):
         self.store.dismiss_month_summary(month)
@@ -1399,6 +1473,12 @@ class MainWindow(QMainWindow):
         info.setWordWrap(True)
         layout.addWidget(info)
 
+        self.budget_period_label = QLabel()
+        self.budget_period_label.setWordWrap(True)
+        self.budget_period_label.setObjectName("kpiSub")
+        self.budget_period_label.setVisible(False)
+        layout.addWidget(self.budget_period_label)
+
         self.budget_table = QTableWidget(0, 5)
         self.budget_table.setHorizontalHeaderLabels(
             [tr('Kategorie'), tr('Budget'), tr('Ausgegeben'), tr('Verbleibend'), tr('Fortschritt')])
@@ -1436,6 +1516,11 @@ class MainWindow(QMainWindow):
 
     def _refresh_budgets_tab(self):
         month_str = self._selected_calendar_month().strftime("%Y-%m")
+        cycle = self.store.get_period_mode() == "cycle"
+        self.budget_period_label.setVisible(cycle)
+        if cycle:
+            self.budget_period_label.setText(
+                tr('Im Zahltag-Zyklus-Modus gilt das Budget des gewählten Monats für den Zyklus, der in diesem Monat am Zahltag beginnt: {0}.').format(period_text(self.store, month_str)))
         rows = self.store.budget_overview(month_str)
         self.budget_table.setRowCount(len(rows))
         for i, r in enumerate(rows):
@@ -1583,7 +1668,9 @@ class MainWindow(QMainWindow):
         selected = self._selected_goal()
         if not selected:
             return
-        dialog = ContributionDialog(self, selected["name"])
+        dialog = ContributionDialog(
+            self, selected["name"],
+            pocket_goal=self.store.notgroschen_pocket_enabled() and selected["name"] == "Notgroschen")
         if dialog.exec() == ContributionDialog.Accepted:
             amount = dialog.get_amount()
             book_as_transaction = dialog.get_book_as_transaction()

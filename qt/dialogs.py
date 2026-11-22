@@ -583,7 +583,7 @@ class GoalDialog(QDialog):
 
 
 class ContributionDialog(QDialog):
-    def __init__(self, parent, goal_name):
+    def __init__(self, parent, goal_name, pocket_goal=False):
         super().__init__(parent)
         self.setWindowTitle(tr('Einzahlen: {0}').format(goal_name))
 
@@ -601,10 +601,19 @@ class ContributionDialog(QDialog):
         layout.addWidget(self.book_check)
 
         hint = QLabel(
-            tr('Damit taucht die Einzahlung als Ausgabe im Kalender, in Budgets und Auswertungen auf – so wie das Geld tatsächlich vom Konto abgeht. Zum rein informativen Vormerken (z. B. externes Depot) kannst du das Häkchen entfernen.')
+            tr('Die Buchung senkt deinen Kontostand und erscheint im Kalender, zählt aber nicht als Ausgabe in Saldo, Ausgabentempo und Auswertungen. Zum rein informativen Vormerken (z. B. externes Depot) kannst du das Häkchen entfernen.')
         )
         hint.setWordWrap(True)
         layout.addWidget(hint)
+
+        # Notgroschen-Unterkonto aktiv: ohne Buchung würde das Vermögen doppelt gezählt
+        self.pocket_warning = QLabel(tr('Achtung: Ohne Buchung sinkt das Girokonto nicht, das Notgroschen-Unterkonto wächst aber – dein Gesamtvermögen würde um diesen Betrag zu hoch angezeigt.'))
+        self.pocket_warning.setWordWrap(True)
+        self.pocket_warning.setStyleSheet('color: #c0392b;')
+        self.pocket_warning.setVisible(False)
+        layout.addWidget(self.pocket_warning)
+        if pocket_goal:
+            self.book_check.toggled.connect(lambda on: self.pocket_warning.setVisible(not on))
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
